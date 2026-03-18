@@ -137,6 +137,16 @@ All Sentinel configuration lives under the `sentinel` key in `settings.js`. Some
   </Warning>
 </ParamField>
 
+### `NRG_SENTINEL_NO_PROTO_FREEZE`
+
+<ParamField path="NRG_SENTINEL_NO_PROTO_FREEZE" type="string">
+  Opt-out from Layer 0 prototype hardening. When set to any non-empty value, Sentinel skips the `Object.preventExtensions()` calls on built-in prototypes.
+
+  <Warning>
+  This disables protection against prototype pollution for the entire process lifetime. Use only in environments where a library legitimately needs to extend a built-in prototype at startup (for example, a legacy polyfill that adds methods to `Array.prototype`). Do not set this in production unless you have explicitly audited every installed package.
+  </Warning>
+</ParamField>
+
 ### `NODE_OPTIONS`
 
 <ParamField path="NODE_OPTIONS" type="string">
