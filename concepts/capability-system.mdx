@@ -1,0 +1,144 @@
+---
+title: "Capability system"
+description: "How the capability-based access control model works in NRG Sentinel"
+---
+
+## Core principles
+
+The capability system is built on five principles that govern every access decision Sentinel makes:
+
+<CardGroup cols={2}>
+  <Card title="Package-level grants" icon="box">
+    Capabilities are granted to an npm package as a whole. Every node type, module, and callback inside that package operates under those grants. The system is not "node A talking to node B" — it is "package authorised to access resource R".
+  </Card>
+  <Card title="Default deny" icon="ban">
+    A package that has not been granted a capability cannot perform the operation. Sentinel blocks and logs the attempt, printing the exact grant needed.
+  </Card>
+  <Card title="Own-node exemption" icon="circle-check">
+    A node is always allowed to operate on itself — its own context, its own `send`, its own `status`. Capabilities only gate cross-package access.
+  </Card>
+  <Card title="Entity:sub-resource:operation naming" icon="tag">
+    Every capability follows a consistent naming scheme: `node:credentials:read`, `fs:write`, `events:listen:flows:started`. The entity, sub-resource, and operation are separated by colons.
+  </Card>
+</CardGroup>
+
+<Note>
+The own-node exemption means a node reading `this.credentials` in its own constructor does not require a capability grant — Sentinel only proxies nodes returned from `getNode()`, not a node's own `this`. Granting `node:credentials:read` signals operator intent and enables auditing, not just access control.
+</Note>
+
+## Capability naming scheme
+
+Capabilities follow the `entity:sub-resource:operation` pattern:
+
+| Capability | Entity | Sub-resource | Operation |
+|---|---|---|---|
+| `node:credentials:read` | `node` | `credentials` | `read` |
+| `node:wires:write` | `node` | `wires` | `write` |
+| `node:context:read` | `node` | `context` | `read` |
+| `fs:read` | `fs` | — | `read` |
+| `fs:write` | `fs` | — | `write` |
+| `network:http` | `network` | — | `http` |
+| `process:exec` | `process` | — | `exec` |
+| `process:env:read` | `process` | `env` | `read` |
+| `hooks:on-send` | `hooks` | — | `on-send` |
+| `registry:register` | `registry` | — | `register` |
+| `events:listen:flows:started` | `events` | — | `listen:flows:started` |
+
+Not every capability has all three segments — shorter forms like `fs:read` are complete capability strings, not shorthands.
+
+## The `node:*` group and the dual-axis check
+
+The `node:*` capability group gates what a package can do to node objects in the runtime — things like reading properties, calling methods, sending messages, or accessing credentials. These are enforced when any code in the package calls `RED.nodes.getNode(id)` and operates on the returned proxy.
+
+<Warning>
+The `node:*` group is the only capability group with a dual-axis check. Both axes must pass for access to be granted:
+
+- **Caller side** — does the calling package have the capability in its grants (`settings.sentinel.allow` or the `packages` section of `.sentinel-grants.json`)?
+- **Target side** — does the target node type allow this operation on its instances (the `nodeTypes` section of `.sentinel-grants.json`)?
+
+All other capability groups (`fs:*`, `network:*`, `process:*`, etc.) only have the caller side. The dual-axis model gives node-type authors control over who can access their nodes, independent of what the calling package has been granted.
+</Warning>
+
+The full `node:*` reference:
+
+| Capability | What it gates |
+|---|---|
+| `node:read` | Read any public property (`id`, `type`, `name`, `z`, custom fields) and call any public method not covered by a more specific cap. Without it the node is fully opaque. |
+| `node:write` | Set arbitrary properties via assignment (`node.prop = value`) |
+| `node:send` | Call `thatNode.send(msg)` — inject a message into the flow attributed to that node |
+| `node:status` | Call `thatNode.status({...})` — change the node's visual badge in the editor |
+| `node:log` | Call `thatNode.log()`, `thatNode.warn()`, `thatNode.error()` — forge log entries attributed to another node |
+| `node:close` | Call `close()` to shut down the node |
+| `node:receive` | Call `receive(msg)` or `emit('input', msg)` to inject a message directly into the node's input handler |
+| `node:events:on` | Call `on(event, fn)` on the node — registers a persistent listener |
+| `node:events:remove-listeners` | Call `removeAllListeners()` / `removeListener()` on the node's EventEmitter |
+| `node:list` | `RED.nodes.eachNode()` — iterate over all nodes in the runtime |
+| `node:wires:read` | Read `node.wires` — the output wire topology |
+| `node:wires:write` | Call `updateWires(wires)` — rewire the node's outputs |
+| `node:credentials:read` | Read `node.credentials` / `getCredentials(id)` |
+| `node:credentials:write` | Write `node.credentials` / `addCredentials(id, creds)` |
+| `node:credentials:delete` | `deleteCredentials(id)` |
+| `node:context:read` | Call `thatNode.context().get(key)` / `thatNode.context().keys()` via a `getNode()` reference |
+| `node:context:write` | Call `thatNode.context().set(key, value)` via a `getNode()` reference |
+
+## Shorthands
+
+Shorthands expand one level to a set of granular capabilities. The resolver is single-level — nested shorthands must be listed explicitly in parent expansions.
+
+| Shorthand | Expands to |
+|---|---|
+| `node:events` | `node:events:on` + `node:events:remove-listeners` |
+| `node:wires` | `node:wires:read` + `node:wires:write` |
+| `node:credentials` | `node:credentials:read` + `node:credentials:write` + `node:credentials:delete` |
+| `node:context` | `node:context:read` + `node:context:write` |
+| `node:all` | All `node:*` capabilities |
+| `flows:all` | `flows:read` + `flows:write` + `flows:delete` + `flows:start` + `flows:stop` |
+| `hooks:message` | All 7 message pipeline hooks (excludes `hooks:remove`) |
+| `hooks:all` | All `hooks:*` capabilities including `hooks:remove` |
+| `fs:all` | `fs:read` + `fs:write` |
+| `network:all` | `network:http` + `network:fetch` + `network:socket` + `network:dns` + `network:listen` |
+| `process:env` | `process:env:read` + `process:env:write` |
+| `process:all` | `process:exec` + `process:env:read` + `process:env:write` + `process:exit` |
+| `all` | Every capability — the nuclear option. Never use in production. |
+
+<Warning>
+`all` includes `vm:execute` and `threads:spawn`, both of which escape `Module._load` hook coverage entirely. Code running inside a `vm` context or worker thread is invisible to Sentinel.
+</Warning>
+
+## How Sentinel identifies the calling package
+
+Every capability check needs to know which package is making the call. Sentinel identifies the caller by walking the V8 call stack:
+
+1. Read `new Error().stack` and split it into frames.
+2. Skip frames belonging to Node-RED core (`@node-red/*`, `node-red`), Express, Node.js internals, and Sentinel itself.
+3. Find the first remaining frame whose file path falls inside the Node-RED `userDir` — specifically `{userDir}/node_modules/` or `{userDir}/nodes/`.
+4. Extract the package name from the `node_modules/<pkg>` segment of that path.
+
+The match is against the npm package name exactly as it appears on disk. This mechanism works because the V8 call stack is generated by the runtime and cannot be spoofed from JavaScript running in the same context.
+
+```
+// Example call stack for fs.readFileSync called from a user package:
+fs.readFileSync              ← built-in (skipped)
+sentinel guard wrapper       ← Sentinel itself (skipped)
+node-red-contrib-my-node/index.js:42   ← first userDir frame → "node-red-contrib-my-node"
+@node-red/runtime/lib/...   ← trusted NR core (skipped)
+```
+
+## Package vs node-type granularity
+
+A single npm package can register many node types, but all of them share the same package name in the call stack. Sentinel cannot distinguish `my-package/nodes/foo.js` from `my-package/nodes/bar.js` at the frame level — both resolve to `my-package`.
+
+<Tip>
+If you need different capability levels for different node types, publish each trust boundary as its own scoped package. When a user installs the parent package, npm (v7+) hoists the children to the top level of `node_modules/`, and Sentinel sees each child's package name independently:
+
+```js
+// settings.js
+sentinel: {
+    allow: {
+        "@my-company/node-data-formatter": ["registry:register"],
+        "@my-company/node-mqtt-enricher":  ["registry:register", "node:credentials:read"],
+        "@my-company/node-flow-auditor":   ["registry:register", "node:list", "node:wires:read"],
+    },
+}
+```
+</Tip>

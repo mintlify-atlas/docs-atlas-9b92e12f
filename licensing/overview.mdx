@@ -1,0 +1,65 @@
+---
+title: "Licensing"
+description: "NRG Sentinel license model, key structure, and verification"
+---
+
+NRG Sentinel is source-available software with a commercial license for production use beyond the built-in 14-day trial. No license key is required to evaluate the product — all features are fully available from the moment you install it.
+
+## Offline verification
+
+License keys are verified **entirely on the local machine**. No data is sent to any server during verification, and no internet connection is required at any point — not at install time, not at startup, and not during runtime.
+
+### What is never sent anywhere
+
+- Your license key or customer ID
+- The Node-RED host name, IP address, or any machine fingerprint
+- Any flow, node, credential, or payload data
+
+<Info>
+This is a deliberate design decision. NRG Sentinel is routinely deployed in restricted, air-gapped, and regulated environments where phone-home behaviour would be a hard blocker. Offline-only verification means there are no firewall rules to punch, no license server uptime to depend on, and no data leaving the host.
+</Info>
+
+## License key structure
+
+A license key is a signed token in the form:
+
+```
+<base64url(payload)>.<Ed25519-signature>
+```
+
+The payload is a JSON object with the following fields:
+
+| Field | Description |
+| --- | --- |
+| `product` | Always `nrg-sentinel` — prevents a key issued for another product from being reused |
+| `tier` | License tier: `trial`, `pro`, `enterprise`, or `oem` |
+| `exp` | Unix timestamp of expiry; `0` means perpetual |
+| `cid` | Customer identifier (email or UUID) — recorded in the Sentinel startup log |
+
+## Verification steps
+
+The following steps are performed locally at startup:
+
+<Steps>
+  <Step title="Verify the signature">
+    Decode and verify the Ed25519 signature against the public key baked into the distribution.
+  </Step>
+  <Step title="Confirm the product">
+    Confirm `product === "nrg-sentinel"`. This prevents a valid key issued for a different product from being accepted.
+  </Step>
+  <Step title="Check expiry">
+    If `exp !== 0`, confirm the current time has not passed the expiry timestamp. Keys with `exp === 0` are perpetual and skip this check.
+  </Step>
+</Steps>
+
+## Security of the public key
+
+The Ed25519 public key is embedded directly in `plugin.js` at build time (via the `SENTINEL_LICENSE_PUBLIC_KEY` environment variable) and obfuscated along with the rest of the plugin source. The corresponding private key is never included in the distribution and is never transmitted.
+
+An attacker who extracts the public key from the binary cannot forge a license — Ed25519 signatures are computationally infeasible to produce without the private key.
+
+## Online activation
+
+The npm package uses offline-only verification. There is no license server, no activation endpoint, and no requirement for internet access — now or after deployment.
+
+If you need centrally managed license revocation (for example, when embedding Sentinel in an OEM product and needing to rotate keys without reinstalling), the Sentinel Launcher binary supports optional online activation. Contact us for details.

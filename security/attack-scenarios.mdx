@@ -1,0 +1,141 @@
+---
+title: "Attack scenarios"
+description: "The 34 attack scenarios that NRG Sentinel detects and blocks in E2E testing"
+---
+
+Each scenario below is a self-contained E2E test that demonstrates an attack against Node-RED and verifies that Sentinel blocks it. All 33 automated tests pass on Node-RED 4.1.7. Demo 21 is browser-only and requires manual verification.
+
+## E2E test results
+
+| # | Demo | Result | Node-RED |
+|---|---|:---:|:---:|
+| 01 | Monkey Patching | ✅ | `4.1.7` |
+| 02 | Hook Injection | ✅ | `4.1.7` |
+| 03 | Credential Theft | ✅ | `4.1.7` |
+| 04 | Wire Manipulation | ✅ | `4.1.7` |
+| 05 | Direct Receive Injection | ✅ | `4.1.7` |
+| 06 | Express Middleware | ✅ | `4.1.7` |
+| 07 | EventEmitter Hijack | ✅ | `4.1.7` |
+| 08 | Node Enumeration | ✅ | `4.1.7` |
+| 09 | Prototype Pollution | ✅ | `4.1.7` |
+| 10 | Flow File Tampering | ✅ | `4.1.7` |
+| 11 | Message Provenance | ✅ | `4.1.7` |
+| 12 | Settings.js Tampering | ✅ | `4.1.7` |
+| 13 | Sentinel Source Tampering | ✅ | `4.1.7` |
+| 14 | Express Route Backdoor | ✅ | `4.1.7` |
+| 15 | Config Node Z-Forgery | ✅ | `4.1.7` |
+| 16 | Symbol Property Bypass | ✅ | `4.1.7` |
+| 17 | EventEmitter Enumeration | ✅ | `4.1.7` |
+| 18 | Deep Stack Bypass | ✅ | `4.1.7` |
+| 19 | HTTP Route Deletion | ✅ | `4.1.7` |
+| 20 | Child Process Exec | ✅ | `4.1.7` |
+| 21 | SW Fetch Interception | — | — |
+| 22 | FS Read | ✅ | `4.1.7` |
+| 23 | Process Env Exfiltration | ✅ | `4.1.7` |
+| 24 | Process Exit DoS | ✅ | `4.1.7` |
+| 25 | VM Sandbox Escape | ✅ | `4.1.7` |
+| 26 | Worker Thread Escape | ✅ | `4.1.7` |
+| 27 | Network Socket Exfiltration | ✅ | `4.1.7` |
+| 28 | Registry Type Hijack | ✅ | `4.1.7` |
+| 29 | Settings Mutation | ✅ | `4.1.7` |
+| 30 | Comms Publish Spoofing | ✅ | `4.1.7` |
+| 31 | Context Permissions | ✅ | `4.1.7` |
+| 32 | Flows Inject | ✅ | `4.1.7` |
+| 33 | Node Event Hijack | ✅ | `4.1.7` |
+| 34 | Config Node Credentials | ✅ | `4.1.7` |
+
+<Info>
+Demo 21 (SW Fetch Interception) is browser-only — it requires manual verification via the interactive start script and cannot be verified in automated CI.
+</Info>
+
+## Scenarios by category
+
+<AccordionGroup>
+  <Accordion title="Runtime manipulation">
+
+    Attacks that modify the Node-RED runtime itself — patching functions, injecting hooks, or polluting shared prototypes.
+
+    | # | Demo | Attack vector |
+    |---|---|---|
+    | 01 | Monkey Patching | Overwrites Node-RED core functions at runtime |
+    | 02 | Hook Injection | Registers malicious `onSend`/`onReceive` hooks |
+    | 09 | Prototype Pollution | Pollutes `Object.prototype` to affect all objects |
+    | 12 | Settings.js Tampering | Modifies `settings.js` at runtime to inject capability grants |
+    | 13 | Sentinel Source Tampering | Patches Sentinel's `preload.js` on disk to disable protection |
+    | 28 | Registry Type Hijack | Calls `registerType('inject', ...)` to silently replace a built-in node type |
+    | 29 | Settings Mutation | Reads or writes `RED.settings` to extract the credential secret or add backdoors |
+
+  </Accordion>
+
+  <Accordion title="Credential and data theft">
+
+    Attacks that read decrypted credentials, environment variables, or other secrets from the running process.
+
+    | # | Demo | Attack vector |
+    |---|---|---|
+    | 03 | Credential Theft | Reads decrypted credentials from live node instances |
+    | 22 | FS Read | Reads `settings.js` via `require('fs')` to extract the credential secret |
+    | 23 | Process Env Exfiltration | Reads `process.env` to harvest injected secrets and API keys |
+    | 34 | Config Node Credentials | Explores open, restricted, and locked config-node credential access |
+
+  </Accordion>
+
+  <Accordion title="Network exfiltration">
+
+    Attacks that send data out of the process over network channels.
+
+    | # | Demo | Attack vector |
+    |---|---|---|
+    | 21 | SW Fetch Interception | Browser-only: editor script uses `fetch()` to exfiltrate data; Service Worker blocks it |
+    | 27 | Network Socket Exfiltration | Creates a raw TCP socket to bypass the HTTP URL allowlist |
+    | 30 | Comms Publish Spoofing | Pushes fake notifications to the editor via `RED.comms.publish()` |
+
+  </Accordion>
+
+  <Accordion title="Code execution">
+
+    Attacks that run arbitrary code outside Sentinel's guarded context.
+
+    | # | Demo | Attack vector |
+    |---|---|---|
+    | 20 | Child Process Exec | Spawns a shell command via `child_process` to execute arbitrary OS commands |
+    | 24 | Process Exit DoS | Calls `process.exit()` from a message handler to kill the runtime |
+    | 25 | VM Sandbox Escape | Uses `require('vm')` to run code outside Sentinel's `Module._load` hooks |
+    | 26 | Worker Thread Escape | Spawns a worker thread whose module loader is invisible to Sentinel |
+
+  </Accordion>
+
+  <Accordion title="Flow and structure attacks">
+
+    Attacks that manipulate the flow graph, the HTTP server structure, or the identity of nodes.
+
+    | # | Demo | Attack vector |
+    |---|---|---|
+    | 04 | Wire Manipulation | Rewires flow connections to exfiltrate data |
+    | 05 | Direct Receive Injection | Bypasses the auth chain via `node.receive()` |
+    | 06 | Express Middleware | Installs rogue HTTP middleware on the admin API |
+    | 10 | Flow File Tampering | Modifies the flows file on disk |
+    | 11 | Message Provenance | Detects and blocks injected messages via HMAC tagging |
+    | 14 | Express Route Backdoor | Registers a hidden admin API route via `httpAdmin.get()` |
+    | 15 | Config Node Z-Forgery | Fakes config-node identity to bypass credential access rules |
+    | 19 | HTTP Route Deletion | Deletes existing Express routes to disable authentication endpoints |
+    | 31 | Context Permissions | Reads or writes another node's context store without a grant |
+    | 32 | Flows Inject | Injects a malicious node into the running flow via the flows API |
+
+  </Accordion>
+
+  <Accordion title="EventEmitter and hook attacks">
+
+    Attacks that exploit Node-RED's internal event bus or per-node EventEmitter to spy on or silence other components.
+
+    | # | Demo | Attack vector |
+    |---|---|---|
+    | 07 | EventEmitter Hijack | Intercepts internal Node-RED events |
+    | 08 | Node Enumeration | Maps every node in the runtime via `eachNode()` |
+    | 16 | Symbol Property Bypass | Uses Symbol-keyed properties to evade proxy guard interception |
+    | 17 | EventEmitter Enumeration | Enumerates all `RED.events` listeners to map internal runtime wiring |
+    | 18 | Deep Stack Bypass | Chains anonymous wrappers to push the malicious frame outside the guard window |
+    | 33 | Node Event Hijack | Spies on or silences another node's input handler via EventEmitter APIs |
+
+  </Accordion>
+</AccordionGroup>

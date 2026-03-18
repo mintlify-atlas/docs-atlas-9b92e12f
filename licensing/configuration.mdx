@@ -1,0 +1,36 @@
+---
+title: "Configuring a license key"
+description: "How to add your license key to NRG Sentinel"
+---
+
+Once you have a license key, there are two ways to supply it to Sentinel: directly in `settings.js`, or via an environment variable.
+
+## Method 1: settings.js
+
+Add a `license` field inside the `sentinel` block in your `settings.js`:
+
+```js
+module.exports = {
+    sentinel: {
+        license: "eyJ...",
+    },
+};
+```
+
+This is the simplest approach for local and self-hosted deployments where `settings.js` is writable.
+
+## Method 2: Environment variable
+
+Set the `NRG_SENTINEL_LICENSE` environment variable before starting Node-RED:
+
+```bash
+NRG_SENTINEL_LICENSE=eyJ...
+```
+
+Use this method in containerised deployments where `settings.js` is mounted read-only (for example, `-v $(pwd)/settings.js:/etc/nodered/settings.js:ro` in Docker). The environment variable takes effect at startup without requiring any changes to the mounted config file.
+
+## Method 3: .sentinel-license file
+
+<Tip>
+Sentinel reads a `.sentinel-license` file from the Node-RED userDir at startup. Place your license key as plain text in this file as an alternative to the environment variable when you need to inject a key into a container without modifying `settings.js` or the container's environment.
+</Tip>

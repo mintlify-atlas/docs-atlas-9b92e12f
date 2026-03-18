@@ -1,0 +1,69 @@
+---
+title: "storage:* capabilities"
+description: "What a package can do to the Node-RED persistent storage layer"
+---
+
+`storage:*` capabilities gate access to `RED.runtime.storage.*` — the raw persistence API that reads and writes flows, credentials, and settings directly to disk.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `storage:read` | `getFlows()`, `getCredentials()`, `getSettings()`, `getLibraryEntry()` |
+| `storage:write` | `saveFlows()`, `saveCredentials()`, `saveSettings()`, `saveLibraryEntry()` |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `storage:all` | `storage:read` + `storage:write` |
+
+## How storage:* differs from flows:* and fs:*
+
+**vs `flows:*`** — `flows:*` goes through the runtime: validation, runtime hooks, and events all fire. `storage:*` bypasses all of that and touches the persistence files directly. A package with only `flows:write` cannot use `storage:write` to silently overwrite flows on disk without triggering runtime hooks.
+
+**vs `fs:*`** — `fs:*` gates direct calls to `require('fs')`. `storage:*` gates calls through the storage adapter object (`RED.runtime.storage`). A package could use the storage adapter to read or write flows and credentials without ever calling `require('fs')` directly, bypassing the `fs:*` gate entirely.
+
+<Warning>
+A package accessing `RED.runtime.storage` directly can:
+- Read the raw encrypted credentials file
+- Overwrite flows on disk without triggering any runtime hooks or events
+- Bypass the entire `flows:*` capability layer
+- Bypass `fs:*` because it goes through the storage adapter, not `require('fs')`
+</Warning>
+
+## Implementation note
+
+<Accordion title="Current enforcement gap">
+`RED.runtime.storage` is not part of the standard `RED` object exposed to node packages via `createNodeApi`. The threat path is a package requiring the storage module directly:
+
+```js
+require('@node-red/runtime/lib/storage')
+```
+
+or a similar internal path. This is currently only catchable via `module:load` (a future capability). Until `module:load` is implemented, `storage:*` cannot be enforced. The capability is designed now so the permission schema is correct when enforcement arrives.
+</Accordion>
+
+## settings.js examples
+
+```js
+// settings.js — a backup plugin that needs to read the raw persistence layer
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-backup": ["registry:register", "storage:read"],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a migration tool that reads and writes storage directly
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-migrator": ["registry:register", "storage:read", "storage:write"],
+        },
+    },
+};
+```

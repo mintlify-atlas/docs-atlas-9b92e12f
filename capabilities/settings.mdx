@@ -1,0 +1,57 @@
+---
+title: "settings:* capabilities"
+description: "What a package can do to the Node-RED runtime settings object"
+---
+
+`settings:*` capabilities gate access to `RED.settings.*` as exposed through `createNodeApi` — the settings object that contains the Node-RED runtime configuration.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `settings:read` | Read any key from `RED.settings` |
+| `settings:write` | Write / mutate any key on `RED.settings` |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `settings:all` | `settings:read` + `settings:write` |
+
+## Implementation note
+
+<Info>
+`RED.settings` is a plain object — there is no `require()` call to intercept. Gating reads and writes requires wrapping the settings object in a `Proxy` when it is attached to the `RED` object inside `createNodeApi`. This is the same approach used for `process.env`.
+</Info>
+
+## Threats without gating
+
+<Warning>
+**`settings:read`** — `RED.settings` contains the credential secret key, admin passwords, and database connection strings. A package that can freely read `RED.settings` can extract the credential encryption key without ever touching the file system, bypassing `fs:*` entirely.
+
+**`settings:write`** — a package that can mutate `RED.settings` can inject backdoor configuration, change the credential secret, or alter any runtime behaviour that is settings-driven — including disabling security features.
+</Warning>
+
+## settings.js examples
+
+```js
+// settings.js — a package that needs to read a custom settings key
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-my-node": ["registry:register", "settings:read"],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a plugin that manages runtime configuration
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-config-manager": ["registry:register", "settings:read", "settings:write"],
+        },
+    },
+};
+```

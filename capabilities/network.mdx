@@ -1,0 +1,110 @@
+---
+title: "network:* capabilities"
+description: "What outbound network calls a package can make"
+---
+
+`network:*` capabilities gate outbound and inbound network access. They are enforced by the runtime preload (for node code running server-side) and by the Service Worker (for browser `fetch()` calls from the editor).
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `network:http` | Outbound `http.request()` / `https.request()` / `http.get()` via the `http`/`https` built-in modules |
+| `network:fetch` | `globalThis.fetch()` |
+| `network:socket` | Outbound raw TCP/UDP/TLS via `require('net').createConnection()`, `require('dgram').createSocket()`, `require('tls').connect()` — these bypass `network:http` entirely |
+| `network:dns` | DNS lookups via `require('dns')` / `require('dns/promises')` / `require('node:dns')` |
+| `network:listen` | Inbound connections: `http.createServer()`, `https.createServer()`, `net.createServer()` — opens a listening port on the host (backdoor vector) |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `network:all` | `network:http` + `network:fetch` + `network:socket` + `network:dns` + `network:listen` |
+
+## The two-check model for HTTP and fetch
+
+For `network:http` and `network:fetch`, two checks must **both** pass before the call is allowed:
+
+1. **Capability gate** — does the calling package hold `network:http` or `network:fetch`?
+2. **URL allowlist** — is the target URL in `sentinel.networkPolicy.allowlist`?
+
+The capability controls **whether** a package can make outbound calls at all. The allowlist controls **which URLs** are reachable. Omitting the allowlist allows any URL for packages that hold the capability.
+
+## Blocked operation warning format
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED http.request() — my-node lacks network:http
+NRG Sentinel: network:fetch not granted — my-node
+```
+
+## settings.js examples
+
+### Basic HTTP grant
+
+```js
+// settings.js — a node that makes outbound HTTP calls
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "network:http"],
+        },
+    },
+};
+```
+
+### HTTP grant with URL allowlist
+
+```js
+// settings.js — restrict which URLs the node can reach
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "network:http"],
+        },
+        networkPolicy: {
+            allowlist: [
+                "https://api.example.com/",
+                "https://metrics.internal/",
+            ],
+        },
+    },
+};
+```
+
+### Raw socket grant
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED net.createConnection() — my-node lacks network:socket
+
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "network:socket"],
+        },
+    },
+};
+```
+
+### DNS grant
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED dns.lookup() — my-node lacks network:dns
+
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "network:dns"],
+        },
+    },
+};
+```
+
+<Accordion title="Gap — network:socket has no allowlist equivalent">
+The URL allowlist (`sentinel.networkPolicy.allowlist`) only applies to `network:http` and `network:fetch`. A package granted `network:socket` can connect raw TCP/UDP to **any host and port** with no further restriction. A host/port allowlist for sockets is not yet designed.
+</Accordion>
+
+<Accordion title="Gap — network:dns has no allowlist equivalent">
+DNS queries go to the system resolver and cannot be restricted by the HTTP allowlist. DNS is a known data-exfiltration channel — subdomains can encode data as queries against an attacker-controlled nameserver. A domain allowlist for DNS would require a separate mechanism. Grant `network:dns` only to packages with a genuine, audited need.
+</Accordion>

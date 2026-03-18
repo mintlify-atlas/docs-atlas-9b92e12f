@@ -1,0 +1,215 @@
+---
+title: "Granting capabilities"
+description: "How to add capability grants to settings.js and .sentinel-grants.json"
+---
+
+By default, Sentinel blocks every privileged operation for every third-party package. A package that needs a capability must be explicitly granted it in `settings.js`.
+
+## The `sentinel.allow` map
+
+Grants live in the `sentinel.allow` map inside `settings.js`. Each key is an **npm package name** exactly as it appears in `node_modules/`; the value is an array of capability strings.
+
+```js
+// settings.js
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-custom-node": ["registry:register"],
+        },
+    },
+};
+```
+
+The unit of trust is the **npm package**, not the individual node type. A single npm package can register many node types, but all of them share the same package name in the call stack. Sentinel cannot distinguish `my-package/nodes/foo.js` from `my-package/nodes/bar.js` at the frame level — both resolve to `my-package`.
+
+<Note>
+  Sentinel only applies capability checks to packages loaded from the Node-RED **userDir** (`{userDir}/node_modules/` or `{userDir}/nodes/`). Node-RED's own built-in nodes (`inject`, `debug`, `function`, `http request`, etc.) are part of the Node-RED installation itself and live outside the userDir, so Sentinel never gates them. You only need to add grants for **third-party packages** that users install into their userDir.
+</Note>
+
+## `registry:register` — required for every node package
+
+Every node package must be granted `registry:register` so Sentinel allows it to call `RED.nodes.registerType()` at startup. Without this grant, Sentinel blocks the call, the node type is never registered, and Node-RED logs _"Waiting for missing types"_ indefinitely.
+
+```js
+// settings.js — minimal grant for a node package that needs no other privileges
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-custom-node": ["registry:register"],
+        },
+    },
+};
+```
+
+Plugins registered via the `node-red.plugins` key in `package.json` do not call `registerType` and do not need `registry:register`.
+
+## How Sentinel identifies the calling package
+
+Sentinel identifies the calling package at runtime by walking the call stack and extracting the `node_modules/<package>` segment from the nearest frame that does not belong to Node-RED or Sentinel itself. The match is against the npm package name exactly as it appears on disk.
+
+## Common grants
+
+<AccordionGroup>
+  <Accordion title="node:credentials:read — reading own credentials">
+    A node that reads `this.credentials` directly in its own constructor or message handler.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                // A node that reads its own credentials (this.credentials) directly.
+                // See "Credential access patterns" for config-node and cross-node cases.
+                "node-red-contrib-influxdb": ["registry:register", "node:credentials:read"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="node:list, node:wires:read, flows:read — flow topology inspection">
+    A flow-auditing plugin that needs to inspect the runtime topology.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-flow-auditor": [
+                    "registry:register",
+                    "node:list",       // RED.nodes.eachNode()
+                    "node:wires:read", // read node.wires (output topology)
+                    "flows:read",      // RED.runtime.flows.getFlows() / getFlow(id)
+                ],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="hooks:on-send, hooks:post-deliver — message pipeline hooks">
+    A tracing or APM plugin that hooks the message pipeline. `hooks:on-send` fires before routing; `hooks:post-deliver` fires after delivery.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-tracer": ["registry:register", "hooks:on-send", "hooks:post-deliver"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="http:admin, http:node — admin and node HTTP routes">
+    A node that registers its own admin UI routes. `http:admin` covers `httpAdmin`; `http:node` covers `httpNode`.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-dashboard": ["registry:register", "http:admin", "http:node"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="process:exec — running OS commands">
+    A node that genuinely needs to run OS commands.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-exec": ["registry:register", "process:exec"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="fs:read — reading files from disk">
+    A node that reads files from disk, for example a CSV reader.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-file-in": ["registry:register", "fs:read"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="network:http — outbound HTTP calls">
+    A node that makes outbound HTTP calls. `network:http` covers `http.request`/`https.request`. Add specific URLs to `sentinel.networkPolicy.allowlist` to restrict further.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-http-request": ["registry:register", "network:http"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="events:listen — listening to runtime events">
+    A plugin (no node types) that listens to runtime events. Plugins registered via the `node-red.plugins` key in `package.json` do not call `registerType`, so no `registry:register` is needed.
+
+    ```js
+    // settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-audit-logger": ["events:listen"],
+            },
+        },
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## The blocked-operation warning format
+
+When Sentinel blocks a call, it prints a warning to the Node-RED console that tells you exactly which grant to add:
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED fs.readFileSync() — my-custom-node lacks fs:read
+  Call stack:
+    at Object.<anonymous> (/data/node_modules/my-custom-node/index.js:42:5)
+  To allow, add to settings.js:
+    sentinel: { allow: { "my-custom-node": ["fs:read"] } }
+```
+
+## Using `.sentinel-grants.json` for UI-managed grants
+
+Sentinel also looks for a `.sentinel-grants.json` file in the **userDir** (next to `settings.js`). This file is the backing store for the **Sentinel editor panel** — the Node-RED UI exposes admin API routes that read and write it directly, so operators can manage grants through the browser without touching `settings.js`.
+
+This separation is intentional. In hardened deployments `settings.js` is mounted read-only so it cannot be modified at runtime. `.sentinel-grants.json` lives in the writable userDir, giving the UI panel a place to persist changes. The two files have different ownership: `settings.js` is managed by deployment tooling; `.sentinel-grants.json` is managed by the UI.
+
+The file has two top-level sections:
+
+```json
+{
+    "packages": {
+        "node-red-contrib-my-package": ["registry:register", "node:credentials:read"]
+    },
+    "nodeTypes": {
+        "my-config-node": {
+            "node:credentials:read": ["node-red-contrib-trusted-consumer"]
+        }
+    }
+}
+```
+
+- **`packages`** — dynamic caller grants, equivalent to `settings.sentinel.allow`. Entries here are merged with `settings.js` at runtime.
+- **`nodeTypes`** — per-node-type target permissions. Keyed on the target node's type, each entry lists which caller packages are allowed to perform a given operation on nodes of that type.

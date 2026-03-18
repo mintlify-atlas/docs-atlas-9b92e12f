@@ -1,0 +1,94 @@
+---
+title: "node:* capabilities"
+description: "What a package can do to node objects in the runtime"
+---
+
+`node:*` capabilities gate cross-package access to live node objects. They are enforced when any code in a package calls `RED.nodes.getNode(id)` and operates on the returned proxy.
+
+<Note>
+A node acting on `this` — its own instance — is always allowed. Capabilities only gate **cross-package** access.
+</Note>
+
+## The dual-axis check
+
+`node:*` is the **only** capability group checked from two sides simultaneously:
+
+- **Caller side** — does the calling package have the capability in its grants?
+- **Target side** — does the target node type permit this operation in its `targetPermissions` entry?
+
+Both axes must pass. All other capability groups (`fs:*`, `network:*`, etc.) only have the caller-side check.
+
+This means a package with `node:credentials:read` can still be blocked from reading a specific config node's credentials if that node type has not listed the package in its `nodeTypes` entry. And a config node that lists a trusted consumer in `nodeTypes` can grant access without the consumer needing a broad package grant.
+
+## Known leak — node existence via `getNode(id)`
+
+<Warning>
+Any package can call `RED.nodes.getNode(id)` and check whether the return value is truthy to discover whether a specific node ID exists — **without holding any capability**. The proxy is returned (or `null`) before any capability check fires. This is a minor information leak that cannot be closed without gating `getNode()` itself, which would break nearly all legitimate inter-node communication patterns.
+</Warning>
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `node:read` | Read any public property (`id`, `type`, `name`, `z`, custom fields) and call any public method not covered by a more specific cap. Acts as the catch-all for every part of a node's public interface not explicitly gated by another cap. Without it the node is fully opaque. |
+| `node:write` | Set arbitrary properties on the node object via assignment (`node.prop = value`) |
+| `node:send` | Call `thatNode.send(msg)` — injects a message into the flow attributed to that node (message spoofing) |
+| `node:status` | Call `thatNode.status({...})` — changes the node's visual badge in the editor |
+| `node:log` | Call `thatNode.log()`, `thatNode.warn()`, `thatNode.error()` — forges log entries attributed to another node |
+| `node:close` | Call `close()` to shut down the node |
+| `node:receive` | Call `receive(msg)` or `emit('input', msg)` to inject a message directly into the node's input handler |
+| `node:events:on` | Call `on(event, fn)` on the node — registers a persistent listener (e.g. spy on all input messages) |
+| `node:events:remove-listeners` | Call `removeAllListeners()` / `removeListener()` on the node's EventEmitter |
+| `node:list` | `RED.nodes.eachNode()` — iterate over all nodes in the runtime |
+| `node:wires:read` | Read `node.wires` — the output wire topology |
+| `node:wires:write` | Call `updateWires(wires)` — rewire the node's outputs |
+| `node:credentials:read` | Read `node.credentials` / `getCredentials(id)` |
+| `node:credentials:write` | Write `node.credentials` / `addCredentials(id, creds)` |
+| `node:credentials:delete` | `deleteCredentials(id)` |
+| `node:context:read` | Call `thatNode.context().get(key)` / `thatNode.context().keys()` via a `getNode()` reference |
+| `node:context:write` | Call `thatNode.context().set(key, value)` via a `getNode()` reference |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `node:events` | `node:events:on` + `node:events:remove-listeners` |
+| `node:wires` | `node:wires:read` + `node:wires:write` |
+| `node:credentials` | `node:credentials:read` + `node:credentials:write` + `node:credentials:delete` |
+| `node:context` | `node:context:read` + `node:context:write` |
+| `node:all` | All `node:*` capabilities above |
+
+<Accordion title="Implementation gap — Object.defineProperty() bypasses node:write">
+The proxy `set` trap captures `thatNode.prop = value`, but `Object.defineProperty(thatNode, 'key', descriptor)` hits the `defineProperty` trap, not `set`. If the proxy has no `defineProperty` trap, `node:write` is bypassable.
+
+The proxy implementation must add a `defineProperty` trap that enforces the same `node:write` check.
+</Accordion>
+
+## settings.js examples
+
+```js
+// settings.js — a node that reads its own credentials
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-my-api": ["registry:register", "node:credentials:read"],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a flow-auditing plugin that inspects the runtime topology
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-flow-auditor": [
+                "registry:register",
+                "node:list",
+                "node:wires:read",
+                "flows:read",
+            ],
+        },
+    },
+};
+```

@@ -1,0 +1,63 @@
+---
+title: "flows:* capabilities"
+description: "What a package can do to the deployed flow graph"
+---
+
+`flows:*` capabilities gate access to `RED.runtime.flows.*` — the runtime API for reading, modifying, and controlling the live flow graph.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `flows:read` | `getFlows()`, `getFlow(id)` |
+| `flows:write` | `addFlow(flow)`, `updateFlow(id, flow)`, `setFlows(config)` |
+| `flows:delete` | `removeFlow(id)` |
+| `flows:start` | `startFlows()` — start the entire flow runtime |
+| `flows:stop` | `stopFlows()` — stop the entire flow runtime (denial-of-service vector) |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `flows:all` | `flows:read` + `flows:write` + `flows:delete` + `flows:start` + `flows:stop` |
+
+## Why `setFlows()` is grouped under `flows:write`
+
+`setFlows()` replaces the entire running configuration with a new one. It is grouped under `flows:write` — not a separate `flows:replace` — because it is semantically a write operation. Its destructive potential is covered by requiring an explicit `flows:write` grant; no additional capability string is needed.
+
+<Warning>
+`flows:stop` is a denial-of-service vector. A package with this capability can halt the entire flow runtime. Grant it only to fully audited packages that genuinely require lifecycle control.
+</Warning>
+
+## settings.js examples
+
+```js
+// settings.js — a flow-auditing plugin that reads the topology
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-flow-auditor": [
+                "registry:register",
+                "flows:read",
+            ],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a deployment tool that can modify and restart flows
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-deploy-manager": [
+                "registry:register",
+                "flows:read",
+                "flows:write",
+                "flows:start",
+                "flows:stop",
+            ],
+        },
+    },
+};
+```

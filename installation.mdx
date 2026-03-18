@@ -1,0 +1,181 @@
+---
+title: "Installation"
+description: "Install NRG Sentinel locally or via Docker"
+---
+
+Sentinel ships as an npm package (`@allanoricil/nrg-sentinel`) and a pre-built Docker image (`allanoricil/nrg-sentinel`). Choose the path that matches your deployment.
+
+<Tabs>
+  <Tab title="Local / Host">
+    ## Local / Host install
+
+    ### Install the package
+
+    Install Sentinel into your Node-RED user directory so that Node-RED auto-discovers it as a plugin:
+
+    ```bash
+    cd ~/.node-red
+    npm install @allanoricil/nrg-sentinel
+    ```
+
+    Node-RED scans `~/.node-red/node_modules/` for packages with a `node-red.plugins` field. Sentinel declares `nrg-sentinel: plugin.js`, so the sidebar panel and editor features load automatically on the next restart.
+
+    ### Activate the preload guard
+
+    The plugin covers the Node-RED API surface (node isolation, Express routing, settings mutation, and so on). To also intercept `require()` calls for dangerous built-in modules, the preload must run before Node-RED's first `require()`.
+
+    Set `NODE_OPTIONS` and start Node-RED:
+
+    ```bash
+    NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload" node-red
+    ```
+
+    <Warning>
+    Do not use `./node_modules/.bin/node-red` to start Node-RED. The `node-red` binary is installed globally — not inside `~/.node-red` — so that symlink does not exist in the user directory. Use the `node-red` command from PATH directly.
+    </Warning>
+
+    ### Make the preload permanent
+
+    Add the export to your shell profile so every new terminal session picks it up:
+
+    <CodeGroup>
+
+    ```bash ~/.bashrc
+    export NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload"
+    ```
+
+    ```bash ~/.zshrc
+    export NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload"
+    ```
+
+    </CodeGroup>
+
+    Reload your profile after editing:
+
+    ```bash
+    source ~/.bashrc   # or source ~/.zshrc
+    ```
+
+    For systemd units or other init systems, set `NODE_OPTIONS` in the `[Service]` environment block or an `EnvironmentFile`.
+
+    ### The `bin/node-red.js` wrapper
+
+    Sentinel ships a wrapper binary (`bin/node-red.js`) that handles preload injection automatically. You do not need to use it for local installs — the `NODE_OPTIONS` approach above is the standard path — but understanding what it does explains the Docker entrypoint.
+
+    The wrapper does two things before starting Node-RED:
+
+    1. **Settings signature verification** — if `NRG_SENTINEL_PUBLIC_KEY` is set in the environment, it verifies the Ed25519 signature of `settings.js` before Node-RED reads it. If the signature is missing or invalid, the process exits before any grants are loaded.
+    2. **Preload injection** — it prepends `--require preload.js` to `NODE_OPTIONS`, then spawns the real `node-red` binary.
+
+    To find `node-red`, the wrapper first searches for a co-installed copy (used in Docker, where both packages share `/usr/src/nodered/node_modules/`). If none is found, it falls back to the `node-red` command in PATH (the local install scenario).
+  </Tab>
+
+  <Tab title="Docker">
+    ## Docker
+
+    Pre-built images are published to Docker Hub on every release.
+
+    ### Pull the image
+
+    <CodeGroup>
+
+    ```bash latest
+    docker pull allanoricil/nrg-sentinel:latest
+    ```
+
+    ```bash pinned version
+    docker pull allanoricil/nrg-sentinel:1.0.4
+    ```
+
+    </CodeGroup>
+
+    ### Run the container
+
+    Mount your `settings.js` read-only from the host and a persistent data directory for flows and credentials:
+
+    <CodeGroup>
+
+    ```bash without signature verification
+    docker run -p 1880:1880 \
+      -v $(pwd)/settings.js:/etc/nodered/settings.js:ro \
+      -v $(pwd)/data:/data \
+      allanoricil/nrg-sentinel:latest
+    ```
+
+    ```bash with signature verification
+    docker run -p 1880:1880 \
+      -v $(pwd)/settings.js:/etc/nodered/settings.js:ro \
+      -v $(pwd)/settings.js.sig:/etc/nodered/settings.js.sig:ro \
+      -v $(pwd)/data:/data \
+      -e NRG_SENTINEL_PUBLIC_KEY=/run/secrets/sentinel.pub \
+      --mount type=secret,id=sentinel_pub,target=/run/secrets/sentinel.pub \
+      allanoricil/nrg-sentinel:latest
+    ```
+
+    </CodeGroup>
+
+    When `NRG_SENTINEL_PUBLIC_KEY` is set, the wrapper verifies the Ed25519 signature in `settings.js.sig` before Node-RED starts. If verification fails, the container exits immediately — Node-RED never reads the (potentially tampered) settings file.
+
+    ### Filesystem layout
+
+    The image enforces a strict ownership split:
+
+    | Path | Owner | Mode | Purpose |
+    |------|-------|------|---------|
+    | `/usr/src/nodered` | root | `a-w` (no write for anyone) | Node-RED + Sentinel install |
+    | `/etc/nodered` | root | `555` | `settings.js` — read-only config |
+    | `/data` | `nodered` | writable | Flows, credentials, custom nodes |
+
+    The Node-RED process runs as the unprivileged `nodered` user. It can read the install and write only to `/data`. A malicious custom node that executes code inside the process cannot modify the Sentinel or Node-RED installation on disk because the write bit is stripped for everyone, including root.
+
+    <Note>
+    Custom nodes installed through the Node-RED editor go into `/data/node_modules/`. They are subject to Sentinel's runtime guards but cannot touch `/usr/src/nodered/` on disk — they cannot replace the Sentinel entrypoint or patch `preload.js`.
+    </Note>
+
+    ### Why `settings.js` lives in `/etc/nodered`
+
+    `settings.js` holds the capability grants for every node. Placing it in `/etc/nodered` (outside the writable `/data` volume) means a malicious node running inside the process cannot edit the file to grant itself new permissions at runtime. Mount it read-only (`:ro`) from the host to enforce this in Docker Compose or plain `docker run`.
+
+    ### Why the entrypoint is an absolute path
+
+    The container entrypoint is:
+
+    ```
+    dumb-init -- node /usr/src/nodered/node_modules/@allanoricil/nrg-sentinel/bin/node-red.js
+    ```
+
+    This bypasses `node_modules/.bin/` and PATH entirely. A malicious package that declares `"bin": { "node-red": "..." }` in its own `package.json` cannot displace the entrypoint because the container never resolves it through npm's bin symlinks.
+
+    `dumb-init` runs as PID 1, reaps zombie processes, and correctly forwards OS signals (such as `SIGTERM` from `docker stop`) to Node-RED — solving the standard PID 1 signal-forwarding problem and ensuring graceful shutdown.
+  </Tab>
+</Tabs>
+
+## Build from source
+
+To build the Docker image from the repository instead of pulling from Docker Hub:
+
+```bash
+docker build -t nrg-sentinel .
+```
+
+You can pin specific versions of Node.js and Node-RED using build arguments:
+
+```bash
+docker build \
+  --build-arg NODE_VERSION=22 \
+  --build-arg NODERED_VERSION=latest \
+  -t nrg-sentinel .
+```
+
+The resulting image has the same filesystem layout and entrypoint as the pre-built image. Use the same `docker run` commands from the Docker tab above.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Configure your first capability grant and verify Sentinel is active
+  </Card>
+  <Card title="Capability reference" icon="shield-check" href="/capabilities/overview">
+    Every capability string, what it gates, and common grant patterns
+  </Card>
+</CardGroup>

@@ -1,0 +1,78 @@
+---
+title: "Prototype hardening"
+description: "How Sentinel prevents prototype pollution before any third-party code runs"
+---
+
+## What prototype pollution is
+
+Prototype pollution is a class of attack where a malicious package injects a property directly onto `Object.prototype` or another shared prototype. Because every plain object in a JavaScript process inherits from `Object.prototype`, a property added there becomes visible on every object — including Sentinel's internal permission maps.
+
+The attack is straightforward:
+
+```js
+// Classic pollution — affects every plain object in the process
+Object.prototype.admin = true;
+// Sentinel's permission check: obj.admin → true even without a grant
+```
+
+If an attacker can set `Object.prototype.admin = true` before Sentinel evaluates a capability check, a simple `if (grants.admin)` test will pass for any caller, regardless of what is actually in `grants`.
+
+## How Sentinel blocks it
+
+`Object.preventExtensions()` is called on every built-in prototype before any third-party module loads:
+
+```js
+[Object.prototype, Array.prototype, Function.prototype,
+ String.prototype, Number.prototype, Boolean.prototype, RegExp.prototype]
+.forEach(function (p) { Object.preventExtensions(p); });
+```
+
+`preventExtensions` blocks the addition of *new* properties to an object. After this call, any attempt to inject a new property onto a protected prototype will throw a `TypeError` in strict mode or silently fail in sloppy mode — either way, the injection does not take effect.
+
+<Info>
+The preload runs as `"use strict"`, so a pollution attempt by a third-party package will throw a `TypeError` rather than silently failing.
+</Info>
+
+## Why `preventExtensions` rather than `freeze`
+
+Sentinel deliberately does not use `Object.freeze()`, which would also make existing properties non-writable. That would break legitimate libraries:
+
+- Express assigns `router['BIND'] = fn` on startup.
+- moment.js sets `proto.toString`.
+- Many other packages extend prototypes at initialisation time.
+
+The attack being defended against is property *injection*, not property *mutation*. `preventExtensions` is the correct surgical choice — it blocks new property additions while leaving existing writable properties unchanged.
+
+## What a malicious package sees
+
+After Layer 0 runs, any third-party package that attempts prototype pollution receives a TypeError:
+
+```js
+// In a malicious node package, after Sentinel has loaded:
+try {
+    Object.prototype.isAdmin = true; // TypeError: Cannot add property isAdmin,
+                                     //   object is not extensible
+} catch (e) {
+    // pollution attempt failed — Sentinel logs the block
+}
+```
+
+## Why this must run before any third-party module loads
+
+Layer 0 is the very first thing in the preload IIFE. The guard is meaningful only if it installs before any third-party code has had a chance to run:
+
+- Node.js loads modules synchronously when `require()` is called. The preload is injected via `--require` before Node-RED starts, which means it runs before any user package's `require()` fires.
+- If any third-party package loaded first, it could call `Object.prototype.pollute = value` before `preventExtensions` ran, and the guard would have no effect on that property.
+
+<Warning>
+Set `NRG_SENTINEL_NO_PROTO_FREEZE=1` only for environments where a library legitimately needs to extend a built-in prototype at startup. Disabling this layer removes protection against prototype pollution for the entire process lifetime.
+</Warning>
+
+## Relationship to intrinsic capture
+
+Prototype hardening and intrinsic capture are complementary defenses:
+
+- `preventExtensions` blocks *adding new properties* to a prototype.
+- Intrinsic capture defends against *overwriting existing writable properties* — it pins the original method before any third-party code can replace it.
+
+Neither alone is sufficient. Together they ensure both the shape and the content of built-in prototypes are stable for guard logic.

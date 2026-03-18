@@ -1,0 +1,184 @@
+---
+title: "Grants and permissions"
+description: "The two files that control what each package is allowed to do: settings.js and .sentinel-grants.json"
+---
+
+Sentinel reads capability grants from two files. They have different owners and serve different purposes, but both feed the same runtime grant table.
+
+## `settings.js` — the `sentinel.allow` map
+
+The primary grant file is `settings.js`, the standard Node-RED configuration file. Grants live in the `sentinel.allow` map. Each key is an npm package name exactly as it appears in `node_modules/`; the value is an array of capability strings:
+
+```js settings.js
+module.exports = {
+    sentinel: {
+        allow: {
+            // Every node package needs registry:register to call RED.nodes.registerType().
+            "my-custom-node": ["registry:register"],
+
+            // A node that reads its own credentials.
+            "node-red-contrib-influxdb": ["registry:register", "node:credentials:read"],
+
+            // A flow-auditing plugin.
+            "node-red-contrib-flow-auditor": [
+                "registry:register",
+                "node:list",
+                "node:wires:read",
+                "flows:read",
+            ],
+
+            // A node that genuinely needs to run OS commands.
+            "node-red-contrib-exec": ["registry:register", "process:exec"],
+
+            // A node that makes outbound HTTP calls.
+            "node-red-contrib-http-request": ["registry:register", "network:http"],
+
+            // A plugin that listens to runtime events (no node types — no registry:register needed).
+            "node-red-contrib-audit-logger": ["events:listen"],
+        },
+    },
+};
+```
+
+At runtime, Sentinel reads the `sentinel.allow` map and merges it with the `packages` section of `.sentinel-grants.json` to build the active grant table.
+
+## `.sentinel-grants.json` — the UI-managed grants file
+
+Sentinel also looks for a `.sentinel-grants.json` file in the Node-RED `userDir` (next to `settings.js`). This file is the backing store for the Sentinel editor panel — the Node-RED UI reads and writes it directly through admin API routes, so operators can manage grants in the browser without touching `settings.js`.
+
+The file has two top-level sections:
+
+```json .sentinel-grants.json
+{
+    "packages": {
+        "node-red-contrib-my-package": ["registry:register", "node:credentials:read"]
+    },
+    "nodeTypes": {
+        "my-config-node": {
+            "node:credentials:read": ["node-red-contrib-trusted-consumer"]
+        }
+    }
+}
+```
+
+### The `packages` section (caller grants)
+
+The `packages` section is equivalent to `settings.sentinel.allow`. Entries here are merged with `settings.js` at runtime. This is what the Sentinel UI writes when you add a package grant through the editor panel.
+
+### The `nodeTypes` section (target permissions)
+
+The `nodeTypes` section provides the target side of the [dual-axis check](/concepts/capability-system#the-node-group-and-the-dual-axis-check). It is keyed on the **target node's type**, and each entry lists which caller packages are allowed to perform a given operation on nodes of that type.
+
+<Info>
+The dual-axis model gives two independent paths to grant access:
+
+- **Caller path** — a package holds the capability in its `packages` entry (in `settings.js` or `.sentinel-grants.json`). This is a broad grant: the package can access that capability on any node it reaches via `getNode()`.
+- **Target path** — the target node type lists the caller in its `nodeTypes` entry. This is a narrow grant: only the listed packages can access that capability on nodes of that specific type, regardless of what they hold in their own grants.
+
+Either path alone is sufficient to allow access. If neither passes, the proxy returns `undefined` for the guarded property.
+</Info>
+
+## Ownership and separation
+
+The separation of the two files is intentional.
+
+| File | Owner | Where it lives |
+|---|---|---|
+| `settings.js` | Deployment tooling | Outside the writable volume |
+| `.sentinel-grants.json` | Sentinel UI panel | Inside the writable userDir (`/data`) |
+
+In hardened deployments, `settings.js` is mounted read-only so it cannot be modified at runtime — a malicious node cannot edit the file to grant itself new permissions:
+
+```bash
+docker run -p 1880:1880 \
+  -v $(pwd)/settings.js:/etc/nodered/settings.js:ro \
+  -v $(pwd)/data:/data \
+  allanoricil/nrg-sentinel:latest
+```
+
+`.sentinel-grants.json` lives in the writable `/data` directory, giving the UI panel a place to persist operator changes made through the browser.
+
+## Node-type permissions — examples
+
+**Grant specific packages access to a config node's credentials:**
+
+```json .sentinel-grants.json
+{
+    "nodeTypes": {
+        "influxdb": {
+            "node:credentials:read": ["node-red-contrib-influxdb"]
+        }
+    }
+}
+```
+
+Only `node-red-contrib-influxdb` gets target-side access. Any other package without `node:credentials:read` in its own grants is blocked.
+
+**Allow multiple consumers, block all others:**
+
+```json .sentinel-grants.json
+{
+    "nodeTypes": {
+        "mqtt-broker": {
+            "node:credentials:read": [
+                "node-red-contrib-mqtt-in",
+                "node-red-contrib-mqtt-out",
+                "node-red-contrib-mqtt-dynamic"
+            ]
+        }
+    }
+}
+```
+
+**Restrict wire rewiring to a specific tool package:**
+
+```json .sentinel-grants.json
+{
+    "nodeTypes": {
+        "function": {
+            "node:wires:write": ["node-red-contrib-flow-manager"],
+            "node:wires:read":  ["node-red-contrib-flow-manager", "node-red-contrib-flow-auditor"]
+        }
+    }
+}
+```
+
+**Document that no caller is allowed via the target path (empty array):**
+
+```json .sentinel-grants.json
+{
+    "nodeTypes": {
+        "my-vault-config": {
+            "node:credentials:read": []
+        }
+    }
+}
+```
+
+An empty array records that no package is an approved caller via the target-side check. A package that holds `node:credentials:read` in its `packages` entry can still access the node via the caller path — the `[]` only closes the target-based path, not the caller-based path.
+
+## Complete example combining both sections
+
+```json .sentinel-grants.json
+{
+    "packages": {
+        "node-red-contrib-influxdb":   ["registry:register", "node:credentials:read"],
+        "node-red-contrib-flow-audit": ["registry:register", "node:list"]
+    },
+    "nodeTypes": {
+        "influxdb": {
+            "node:credentials:read": ["node-red-contrib-influxdb"]
+        },
+        "mqtt-broker": {
+            "node:credentials:read": ["node-red-contrib-mqtt-in", "node-red-contrib-mqtt-out"]
+        },
+        "my-internal-config": {
+            "node:credentials:read": []
+        }
+    }
+}
+```
+
+<Note>
+The `nodeTypes` section is purely additive: if the caller is listed, access is granted immediately. If it is not, Sentinel falls through to the `packages` section and `settings.js` grants as normal. An entry in `nodeTypes` cannot block a package that already holds the capability in its caller grants.
+</Note>

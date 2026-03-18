@@ -1,0 +1,66 @@
+---
+title: "fs:* capabilities"
+description: "What file system operations a package can perform"
+---
+
+`fs:*` capabilities gate file system access. They are enforced by hooking `require('fs')` and all its variants in the preload — the same mechanism used for `require('http')` and `require('https')`.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `fs:read` | `readFile`, `readFileSync`, `readdir`, `readdirSync`, `createReadStream`, `stat`, `statSync`, `exists`, `existsSync`, `open` (read mode), `watch`, `watchFile` |
+| `fs:write` | `writeFile`, `writeFileSync`, `appendFile`, `appendFileSync`, `createWriteStream`, `unlink`, `unlinkSync`, `mkdir`, `mkdirSync`, `rename`, `renameSync`, `open` (write mode) |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `fs:all` | `fs:read` + `fs:write` |
+
+## All fs module variants must be hooked
+
+<Warning>
+The following module specifiers all expose the same file system operations and must all be intercepted. Hooking only `require('fs')` leaves the other three as bypasses:
+
+- `require('fs')`
+- `require('fs/promises')`
+- `require('node:fs')`
+- `require('node:fs/promises')`
+</Warning>
+
+## Why this gate exists
+
+Without `fs:*` enforcement, any node package can freely call `require('fs')` and:
+
+- Read `settings.js` to extract the credential encryption key and admin passwords
+- Read `flows_cred.json` to obtain raw encrypted credentials
+- Read `.env` files or SSH keys from the host
+- Overwrite flow and credential files directly, bypassing the entire HTTP deploy pipeline
+
+## Blocked operation warning format
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED fs.readFileSync() — my-custom-node lacks fs:read
+  Call stack:
+    at Object.<anonymous> (/data/node_modules/my-custom-node/index.js:42:5)
+  To allow, add to settings.js:
+    sentinel: { allow: { "my-custom-node": ["fs:read"] } }
+```
+
+## settings.js example
+
+```js
+// settings.js — a CSV reader node that reads files from disk
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "fs:read"],
+        },
+    },
+};
+```
+
+<Accordion title="Gap — fs:* has no path allowlist">
+A package granted `fs:read` can read **any file on the host** with no restriction on which paths are accessible. There is no mechanism to say "only read from `/data/`". A path allowlist for `fs` is not yet designed.
+</Accordion>

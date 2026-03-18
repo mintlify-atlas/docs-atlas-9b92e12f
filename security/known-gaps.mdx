@@ -1,0 +1,141 @@
+---
+title: "Known gaps"
+description: "Known limitations and bypass vectors in NRG Sentinel's protection model"
+---
+
+This page documents every known limitation and bypass vector in Sentinel's current implementation. Operators should read this before making security decisions based on Sentinel's protection model.
+
+<Warning>
+These are real, documented limitations — not theoretical concerns. Each gap describes an attack surface that a capable adversary could exploit in a production deployment.
+</Warning>
+
+## 1. Node existence leak via `getNode(id)`
+
+**Capability involved:** None — no capability is required.
+
+**Description.** Any package can call `RED.nodes.getNode(id)` and test whether the return value is truthy to discover whether a specific node ID exists in the runtime, without holding any capability. The proxy is returned (or `null`) before any capability check fires.
+
+**Attack surface.** A malicious package that knows or can enumerate node IDs can build a map of which nodes are present in the deployment without holding `node:read` or `node:list`. This is an information leak that could assist a more targeted attack.
+
+**Why it cannot be closed easily.** Gating `getNode()` itself would break nearly all legitimate inter-node communication patterns. Most node packages call `RED.nodes.getNode(config.someId)` to retrieve a config node they depend on — this is the fundamental inter-node communication pattern in Node-RED.
+
+**Mitigation.** There is no current mitigation. Operators should be aware that the existence of a node ID is not confidential information under the current model.
+
+---
+
+## 2. `Object.defineProperty` bypass of `node:write`
+
+**Capability involved:** `node:write`
+
+**Description.** The proxy `set` trap captures `thatNode.prop = value`, but `Object.defineProperty(thatNode, 'key', descriptor)` hits the `defineProperty` trap, not the `set` trap. If the proxy has no `defineProperty` trap, `node:write` is bypassable:
+
+```js
+// Without a defineProperty trap, this bypasses the set trap:
+Object.defineProperty(proxiedNode, 'credentials', {
+    get: function () { return stolenCreds; }
+});
+```
+
+**Status.** This is documented in capability-design.md as an implementation gap that the proxy must close. A `defineProperty` trap enforcing the same `node:write` check is present in the current preload implementation.
+
+**Mitigation.** The `defineProperty` trap is implemented. If you are running a custom or patched preload, verify that the `defineProperty` trap is present on all node proxies.
+
+---
+
+## 3. ESM `import()` bypasses all `Module._load` hooks
+
+**Capability involved:** All module-based capabilities (`fs:*`, `network:http`, `process:exec`, `network:socket`, `network:dns`, `vm:execute`, `threads:spawn`).
+
+**Description.** Every built-in gate is enforced by wrapping the module returned from `require()` via the `Module._load` hook. This mechanism only covers CommonJS `require()`. ESM dynamic imports — `await import('fs')`, `await import('child_process')` — use the ESM loader, which does not call `Module._load`. A package using `import()` bypasses every single gate unconditionally.
+
+| Gate | Bypassed by ESM `import()`? |
+|---|---|
+| `fs:*` | Yes — `await import('fs')` gives unwrapped `fs` |
+| `network:http` | Yes — `await import('http')` gives unwrapped `http` |
+| `process:exec` | Yes — `await import('child_process')` gives unwrapped `child_process` |
+| `network:socket` | Yes |
+| `network:dns` | Yes |
+| `vm:execute` | Yes — `await import('vm')` is not blocked |
+| `threads:spawn` | Yes — `await import('worker_threads')` is not blocked |
+
+**Current Node-RED context.** Node-RED node packages are predominantly CommonJS. ESM packages are rare but not impossible, and an attacker writing a malicious package could deliberately use ESM to evade detection.
+
+**Interim mitigation.** Sentinel detects `"type": "module"` in a package's `package.json` and blocks the entire package during the `Module._load` hook. This is a temporary safety measure — not a permanent policy. Without the ESM loader hook active, an ESM package is a complete blind spot.
+
+Set `NRG_SENTINEL_ALLOW_ESM=1` to bypass this block if you accept the risk during development.
+
+**Planned fix.** The ESM loader hook (`require('node:module').register(...)`) is the intended long-term solution. Once registered, ESM packages will load under the same capability rules as CJS packages. See the ESM section of `docs/capability-design.md` for the full implementation design.
+
+---
+
+## 4. `network:socket` has no allowlist
+
+**Capability involved:** `network:socket`
+
+**Description.** The URL allowlist (`sentinel.networkPolicy.allowlist`) only applies to `network:http` and `network:fetch`. A package granted `network:socket` can connect raw TCP/UDP to any host and port with no further restriction.
+
+**Attack surface.** A package that legitimately needs one raw TCP connection (e.g. to a specific MQTT broker) receives the ability to connect to any host and port, including attacker-controlled infrastructure.
+
+**Mitigation.** There is no host/port allowlist for sockets. Operators should grant `network:socket` only to packages where raw socket access is genuinely required and the package has been reviewed. Do not use `network:socket` as a substitute for `network:http` when HTTP would suffice.
+
+---
+
+## 5. `network:dns` has no allowlist
+
+**Capability involved:** `network:dns`
+
+**Description.** DNS queries go to the system resolver. There is no domain allowlist mechanism — a package granted `network:dns` can query any domain.
+
+**Attack surface.** DNS is a well-known data-exfiltration channel. Subdomains can encode data to an attacker-controlled nameserver (DNS tunneling). A package with `network:dns` can exfiltrate arbitrary data without using HTTP at all.
+
+**Mitigation.** There is no current mitigation. Grant `network:dns` only to packages where DNS lookups are genuinely required. Consider whether the use case could be served by `network:http` to a DNS-over-HTTPS endpoint instead, which would be subject to the URL allowlist.
+
+---
+
+## 6. `fs:*` has no path allowlist
+
+**Capability involved:** `fs:read`, `fs:write`
+
+**Description.** A package granted `fs:read` can read any file on the host with no restriction on which paths are accessible. There is no mechanism to say "only read from `/data/`".
+
+**Attack surface.** A package that legitimately reads configuration from `/data/` also has the ability to read `settings.js`, `flows_cred.json`, SSH keys, and any other file accessible to the Node-RED process user.
+
+**Mitigation.** There is no path allowlist for `fs:*`. In hardened deployments, reduce the attack surface at the OS level: run the Node-RED process as an unprivileged user and restrict filesystem permissions so the process user cannot read sensitive files outside its working directory. In Docker, this is the default configuration — the `nodered` user can only write to `/data` and cannot read the Sentinel or Node-RED installations.
+
+---
+
+## 7. `storage:*` not yet enforceable
+
+**Capability involved:** `storage:read`, `storage:write`
+
+**Description.** `RED.runtime.storage` is not part of the standard `RED` object exposed to node packages via `createNodeApi`. A package that accesses the storage module directly — via `require('@node-red/runtime/lib/storage')` or a similar internal path — bypasses the `storage:*` capability entirely. This is only catchable via a `module:load` capability that is not yet implemented.
+
+**Attack surface.** A package accessing `RED.runtime.storage` directly can:
+- Read the raw encrypted credentials file, bypassing `node:credentials:read`.
+- Overwrite flows on disk without triggering any runtime hooks or events, bypassing `flows:*`.
+- Bypass `fs:*` because it goes through the storage adapter object rather than `require('fs')`.
+
+**Mitigation.** None currently. The `storage:*` capability is designed so the permission schema is correct when enforcement arrives via `module:load`. Until then, operators should ensure that installed packages are reviewed before being granted any capabilities and that the filesystem permissions described in Gap 6 are in place.
+
+---
+
+## 8. Grants are per package, not per node type
+
+**Capability involved:** All capabilities.
+
+**Description.** A single npm package can register many node types, but all of them share the same package name in the call stack. Sentinel cannot distinguish `my-package/nodes/foo.js` from `my-package/nodes/bar.js` at the frame level — both resolve to `my-package`. All node types in a package share the same grants.
+
+**Attack surface.** If a package contains both a high-privilege node type (e.g. one that legitimately needs `fs:read`) and a low-privilege node type (e.g. a simple formatter), granting `fs:read` to the package means both node types can read files — including the formatter, which has no legitimate need for that capability.
+
+**Mitigation.** Publish each trust boundary as its own scoped package and group them under a parent that users install as a single dependency. This is the established pattern in the Node-RED ecosystem (`@node-red/nodes`, `@node-red/runtime`, `@node-red/editor-api` are all separate packages). Scoped child packages let you apply grants at exactly the right granularity:
+
+```js
+sentinel: {
+    allow: {
+        // formatter needs no privileged access
+        "@my-company/node-data-formatter": ["registry:register"],
+        // enricher reads credentials from a config node
+        "@my-company/node-mqtt-enricher":  ["registry:register", "node:credentials:read"],
+    },
+}
+```

@@ -1,0 +1,101 @@
+---
+title: "Node isolation"
+description: "How every node returned by getNode() is wrapped in an ES6 Proxy"
+---
+
+## Why every `getNode()` return value is wrapped
+
+Node-RED's runtime allows any node package to look up any other node by ID using `RED.nodes.getNode(id)`. Without a guard, a malicious package could:
+
+- Read `node.credentials` to steal decrypted secrets.
+- Assign arbitrary properties (`node.credentials = stolen`) to modify another node's state.
+- Call `node.receive(msg)` to inject messages into another node's input handler.
+- Use `Object.defineProperty(node, 'key', getter)` to install a property trap.
+
+Sentinel wraps every object returned by `getNode()` (and `eachNode()`) in an ES6 `Proxy` before handing it to the caller:
+
+```js
+return new Proxy(realNode, {
+    get:            function (target, prop) { /* capability check */ },
+    set:            function (target, prop, value) { /* capability check */ },
+    defineProperty: function (target, prop, descriptor) { /* capability check */ },
+});
+```
+
+An ES6 `Proxy` intercepts property access at the language level. It is not possible to bypass it from JavaScript without a reference to the real object behind the proxy.
+
+## The `get` trap
+
+Every property read on a proxied node fires the `get` trap. The trap performs the dual-axis capability check before returning the value:
+
+- **Caller side** — does the calling package hold the capability required for this property (e.g. `node:credentials:read`, `node:wires:read`)?
+- **Target side** — does the target node type's `targetPermissions` entry allow this operation from this caller?
+
+Both axes must pass. If either fails, the trap returns `undefined` and logs a warning.
+
+**Symbol handling.** The `get` trap passes through only a whitelist of known safe symbols (`Symbol.toPrimitive`, `Symbol.toStringTag`, `Symbol.iterator`, `Symbol.asyncIterator`, `Symbol.hasInstance`). All other symbols return `undefined`. Without this, an attacker could call `Object.getOwnPropertySymbols(proxy)` and read symbol-keyed internal properties with no capability check.
+
+**Private property blocking.** Underscore-prefixed properties (`_complete`, `_removeAllListeners`, etc.) that are not in the allowed method list are unconditionally blocked — no capability can ever grant access to them.
+
+**Deep-clone and freeze for `wires`.** When `node.wires` is read, the proxy returns a frozen deep copy:
+
+```js
+return $freeze($jsonParse($jsonStringify(target.wires)));
+```
+
+This prevents the caller from mutating the live wires array by retaining a reference to it. `$freeze` then prevents them from adding properties to the copy itself. Both `$jsonParse` and `$jsonStringify` are pinned intrinsics, so a tampered `JSON.parse` cannot be used to subvert the deep-clone.
+
+## The `set` trap
+
+Every direct property assignment on a proxied node (`node.prop = value`) fires the `set` trap. The trap checks the `node:write` capability before allowing the assignment to proceed on the real underlying node.
+
+If the caller lacks `node:write`, the assignment is silently ignored (the trap returns `true` to suppress a `TypeError`) and a warning is logged.
+
+## The `defineProperty` trap
+
+The `defineProperty` trap is necessary to close a specific bypass path. Without it, a caller could use `Object.defineProperty(proxiedNode, 'key', descriptor)` to define a property on the real node, entirely bypassing the `set` trap:
+
+```js
+// This would bypass the set trap if defineProperty trap were absent:
+Object.defineProperty(proxiedNode, 'credentials', {
+    get: function () { return stolenCreds; }
+});
+```
+
+The `defineProperty` trap enforces the same `node:write` capability check that the `set` trap uses, closing this bypass entirely.
+
+<Note>
+The `defineProperty` trap is documented in capability-design.md as a known implementation gap that must be present. The trap is implemented in the current preload.
+</Note>
+
+## The dual-axis check
+
+For `node:*` capabilities, access requires both axes to pass:
+
+| Check axis | What it examines | Where it is configured |
+|---|---|---|
+| Caller side | Does the calling package's grant list include the required capability? | `sentinel.allow` in `settings.js`, or `packages` in `.sentinel-grants.json` |
+| Target side | Does the target node type's `targetPermissions` entry list this caller as approved? | `nodeTypes` in `.sentinel-grants.json` |
+
+Either axis alone can grant access. If both fail, the proxy blocks the operation.
+
+`node:*` is the only capability group with a dual-axis check. All other groups (`fs:*`, `network:*`, etc.) only have the caller-side check.
+
+## WeakMap for node-to-owner tracking
+
+Sentinel records per-node metadata — specifically, whether a node is a config node — using a `WeakMap` keyed on the live node instance:
+
+```js
+var nodeConfigNodeMap = new $WeakMap();
+// At createNode time:
+$weakMapSet(nodeConfigNodeMap, nodeInstance, isConfigNode);
+// At createNodeProxy time:
+var isConfigNode = $weakMapGet(nodeConfigNodeMap, realNode) === true;
+```
+
+Storing metadata in a `WeakMap` rather than on the node object:
+
+- Does not modify the node object — the node's own code is unaware of Sentinel's bookkeeping.
+- `WeakMap` keys are not enumerable — the mapping is invisible to `Object.keys()`, `for…in`, and `JSON.stringify()`.
+- References are weak — when a node is garbage-collected the entry is automatically removed, preventing memory leaks over long-running deployments.
+- `WeakMap.prototype.get` and `.set` are pinned as intrinsics (`$weakMapGet`, `$weakMapSet`), so a tampered `WeakMap.prototype.get` that always returns `true` cannot grant blanket config-node credential access.

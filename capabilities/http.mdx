@@ -1,0 +1,53 @@
+---
+title: "http:* capabilities"
+description: "What HTTP routes and middleware a package can register on the Node-RED Express instances"
+---
+
+`http:*` capabilities gate route and middleware registration on Node-RED's two Express instances. `httpAdmin` and `httpNode` are separate servers with different trust levels and different threat profiles.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `http:admin` | Register routes or middleware on `httpAdmin` — the admin UI server hosting `/flows`, `/settings`, auth endpoints, and all editor API routes (highest privilege) |
+| `http:node` | Register routes or middleware on `httpNode` — the user-facing HTTP endpoint server |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `http:register` | `http:admin` + `http:node` |
+
+## `http:admin` vs `http:node`
+
+**`http:admin`** covers the admin Express instance. Routes registered here share the same server as the Node-RED editor API — including the `/flows` deploy endpoint, the `/settings` endpoint, and authentication middleware. A package that registers on `httpAdmin` without a grant is executing the "Express route backdoor" attack: installing a hidden route or middleware with full admin API access.
+
+**`http:node`** covers the user-facing HTTP instance that serves `http in` / `http response` node pairs and any custom endpoints a node package exposes to external consumers. This is lower privilege than `httpAdmin` but still significant — rogue middleware here can intercept or modify all user-facing HTTP traffic through the instance.
+
+<Warning>
+Any package can attempt to register on either Express instance — routes are not scoped to node type. Without `http:*` gating, a malicious package can silently install admin API routes, intercept existing routes, or delete authentication endpoints.
+</Warning>
+
+## settings.js examples
+
+```js
+// settings.js — a dashboard node that registers both admin UI routes and user-facing endpoints
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-dashboard": ["registry:register", "http:admin", "http:node"],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a plugin that only needs to add user-facing HTTP endpoints
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-http-endpoints": ["registry:register", "http:node"],
+        },
+    },
+};
+```

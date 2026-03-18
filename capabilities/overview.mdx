@@ -1,0 +1,120 @@
+---
+title: "Capability overview"
+description: "Every capability group in NRG Sentinel and what each one gates"
+---
+
+NRG Sentinel enforces a **default-deny** policy: every privileged operation is blocked for every third-party package unless an explicit grant is present in `settings.js`. Capabilities are the unit of that grant.
+
+## How capability strings are structured
+
+Every capability follows the **Entity:sub-resource:operation** naming scheme:
+
+```
+node:credentials:read
+fs:write
+events:listen:flows:started
+network:http
+process:env:read
+```
+
+- **Entity** — the top-level resource group (`node`, `fs`, `network`, etc.)
+- **Sub-resource** — narrows the entity to a specific surface (`credentials`, `env`, `wires`)
+- **Operation** — the action being gated (`read`, `write`, `delete`, `execute`)
+
+Not every capability has all three segments. `fs:read` has two; `node:credentials:read` has three; `vm:execute` has two.
+
+Shorthands exist at each level. `node:credentials` expands to `node:credentials:read` + `node:credentials:write` + `node:credentials:delete`. The resolver is **single-level** — nested shorthands must be listed explicitly in parent expansions.
+
+## How Sentinel identifies the calling package
+
+Sentinel walks the call stack at runtime and extracts the `node_modules/<package>` segment from the nearest frame that does not belong to Node-RED or Sentinel itself. The match is against the npm package name exactly as it appears on disk.
+
+```
+fs.readFileSync          ← built-in (skipped)
+node-red-contrib-my-node/index.js:42   ← nearest userDir frame → package name extracted here
+@node-red/runtime/lib/...              ← Node-RED internal (skipped)
+```
+
+The resolved package name is then looked up in the grants map.
+
+## Blocked operation warning format
+
+When Sentinel blocks a call, it logs the following to the Node-RED console:
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED fs.readFileSync() — my-custom-node lacks fs:read
+  Call stack:
+    at Object.<anonymous> (/data/node_modules/my-custom-node/index.js:42:5)
+  To allow, add to settings.js:
+    sentinel: { allow: { "my-custom-node": ["fs:read"] } }
+```
+
+For modules blocked entirely at `require()` time (like `vm` and `worker_threads`), the operation throws immediately:
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED require('vm') — my-custom-node lacks vm:execute
+```
+
+<Warning>
+The `all` shorthand grants every capability in this document — including `vm:execute` and `threads:spawn`, which escape Sentinel's `Module._load` hook coverage entirely. Never use `all` in a production permissions file.
+</Warning>
+
+## Capability groups
+
+<CardGroup cols={2}>
+  <Card title="node:*" href="/capabilities/node">
+    What a package can do to node objects in the runtime
+  </Card>
+  <Card title="flows:*" href="/capabilities/flows">
+    What a package can do to the deployed flow graph
+  </Card>
+  <Card title="network:*" href="/capabilities/network">
+    What outbound network calls a package can make
+  </Card>
+  <Card title="fs:*" href="/capabilities/filesystem">
+    What file system operations a package can perform
+  </Card>
+  <Card title="process:*" href="/capabilities/process">
+    What OS-level operations a package can perform
+  </Card>
+  <Card title="hooks:*" href="/capabilities/hooks">
+    What message pipeline hooks a package can register
+  </Card>
+  <Card title="http:*" href="/capabilities/http">
+    What HTTP routes and middleware a package can register
+  </Card>
+  <Card title="events:*" href="/capabilities/events">
+    What a package can listen to or emit on the internal event bus
+  </Card>
+  <Card title="registry:*" href="/capabilities/registry">
+    What a package can do to the node type registry
+  </Card>
+  <Card title="settings:*" href="/capabilities/settings">
+    What a package can do to the runtime settings object
+  </Card>
+  <Card title="storage:*" href="/capabilities/storage">
+    What a package can do to the persistent storage layer
+  </Card>
+  <Card title="vm:*, threads:*, comms:*" href="/capabilities/vm-threads-comms">
+    VM contexts, worker threads, and the comms channel
+  </Card>
+</CardGroup>
+
+## All capability groups at a glance
+
+| Group | What it gates |
+|---|---|
+| `node` | Operations on live node objects obtained via `RED.nodes.getNode()` |
+| `flows` | Reading, writing, and deploying the flow graph via `RED.runtime.flows.*` |
+| `network` | Outbound HTTP, fetch, raw TCP/UDP sockets, DNS lookups, and inbound listeners |
+| `fs` | File system reads and writes via `require('fs')` and its variants |
+| `process` | Child process execution, `process.env` access, and `process.exit()` |
+| `hooks` | Message pipeline hook registration via `RED.hooks.add()` and `.remove()` |
+| `http` | Route and middleware registration on the admin and node Express instances |
+| `events` | Listening to and emitting on the `RED.events` internal event bus |
+| `registry` | Node type registration and lookup via `RED.nodes.registerType()` / `getType()` |
+| `settings` | Reading and writing `RED.settings` keys |
+| `storage` | Direct access to the persistence layer via `RED.runtime.storage.*` |
+| `vm` | Running code in isolated V8 contexts via `require('vm')` |
+| `threads` | Spawning worker threads via `require('worker_threads')` |
+| `comms` | Publishing to the server-to-editor WebSocket channel via `RED.comms.publish()` |

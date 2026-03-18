@@ -1,0 +1,110 @@
+---
+title: "Fine-grained control with scoped packages"
+description: "How to use scoped npm packages to apply different capability levels to different node types"
+---
+
+## The limitation: grants are per package
+
+A single npm package can register many node types, but all of them share the same package name in the call stack. Sentinel cannot distinguish `my-package/nodes/foo.js` from `my-package/nodes/bar.js` at the frame level — both resolve to `my-package`. This is intentional: the **package** is the unit you install, audit, and sign off on.
+
+The consequence is that you cannot grant `network:http` to one node type and deny it to another if both live in the same package. Any grant you add applies to the entire package.
+
+## The solution: publish each trust boundary as its own scoped package
+
+If you need different capability levels for different node types, publish each trust boundary as its own scoped package and group them under a parent that users install as a single dependency.
+
+<Steps>
+  <Step title="Create a parent package as a dependency aggregator">
+    The parent package has no node code of its own — it exists only to pull in the child packages as a single user-facing install target.
+
+    ```json
+    {
+        "name": "@my-company/nodes",
+        "version": "1.0.0",
+        "dependencies": {
+            "@my-company/node-data-formatter": "^1.0.0",
+            "@my-company/node-mqtt-enricher": "^1.0.0",
+            "@my-company/node-flow-auditor": "^1.0.0"
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Give each child package its own npm identity and node-red field">
+    Each child package has its own `node-red` field so Node-RED discovers it directly, and its own npm name so Sentinel can grant it capabilities independently.
+
+    ```json
+    {
+        "name": "@my-company/node-mqtt-enricher",
+        "version": "1.0.0",
+        "node-red": { "nodes": { "mqtt-enricher": "index.js" } }
+    }
+    ```
+  </Step>
+
+  <Step title="Grant capabilities at the right granularity in settings.js">
+    Because each child is a distinct npm package, grants can be applied to exactly the nodes that need them.
+
+    ```js
+    sentinel: {
+        allow: {
+            // formatter needs no privileged access — registry:register is enough
+            "@my-company/node-data-formatter": ["registry:register"],
+            // enricher reads credentials from a config node
+            "@my-company/node-mqtt-enricher":  ["registry:register", "node:credentials:read"],
+            // auditor needs to walk the full node graph
+            "@my-company/node-flow-auditor":   ["registry:register", "node:list", "node:wires:read"],
+        },
+    }
+    ```
+  </Step>
+</Steps>
+
+## How npm hoisting makes this transparent to users
+
+When a user runs `npm install @my-company/nodes`, npm (v7+) hoists the children to the top-level `node_modules/`. Node-RED discovers them directly because each has its own `node-red` field. Sentinel sees each child's package name independently, so grants can be applied at exactly the right granularity.
+
+<Info>
+  This pattern is already established in the Node-RED ecosystem. `@node-red/nodes`, `@node-red/runtime`, and `@node-red/editor-api` are all separate packages under the `@node-red` namespace, each with a distinct npm identity and independent install footprint.
+</Info>
+
+## Full example
+
+**Parent `package.json`:**
+
+```json
+{
+    "name": "@my-company/nodes",
+    "version": "1.0.0",
+    "dependencies": {
+        "@my-company/node-data-formatter": "^1.0.0",
+        "@my-company/node-mqtt-enricher": "^1.0.0",
+        "@my-company/node-flow-auditor": "^1.0.0"
+    }
+}
+```
+
+**Child `package.json` (one per trust boundary):**
+
+```json
+{
+    "name": "@my-company/node-mqtt-enricher",
+    "version": "1.0.0",
+    "node-red": { "nodes": { "mqtt-enricher": "index.js" } }
+}
+```
+
+**`settings.js` with per-scope grants:**
+
+```js
+sentinel: {
+    allow: {
+        // formatter needs no privileged access — registry:register is enough
+        "@my-company/node-data-formatter": ["registry:register"],
+        // enricher reads credentials from a config node
+        "@my-company/node-mqtt-enricher":  ["registry:register", "node:credentials:read"],
+        // auditor needs to walk the full node graph
+        "@my-company/node-flow-auditor":   ["registry:register", "node:list", "node:wires:read"],
+    },
+}
+```

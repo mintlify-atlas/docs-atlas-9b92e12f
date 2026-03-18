@@ -1,0 +1,83 @@
+---
+title: "Network policy enforcement"
+description: "How Sentinel enforces the URL allowlist for outbound HTTP/HTTPS calls"
+---
+
+## The URL allowlist mechanism
+
+Sentinel enforces a two-stage check for outbound HTTP/HTTPS calls:
+
+1. **Capability check** — the calling package must hold `network:http` (for `http.request()`, `https.request()`, `http.get()`) or `network:fetch` (for the global `fetch()`). If this check fails, the call is blocked immediately.
+2. **URL allowlist check** — if a `sentinel.networkPolicy.allowlist` is configured, the request URL must match at least one entry in the allowlist. If no entry matches, the call is blocked.
+
+Both checks must pass for an outbound HTTP/HTTPS call to proceed.
+
+## Configuration
+
+```js
+// settings.js
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "network:http"],
+        },
+        networkPolicy: {
+            allowlist: [
+                "https://api.example.com/",
+                "https://metrics.internal/",
+            ],
+        },
+    },
+};
+```
+
+If `sentinel.networkPolicy.allowlist` is not set, any URL is reachable for packages that hold `network:http`.
+
+## How the URL check fires
+
+The `network:http` capability check happens inside the guarded `http.request()` and `https.request()` wrappers installed by the `Module._load` hook. After the capability check passes, the URL of the outgoing request is tested against the compiled allowlist patterns using `matchesNetPolicy()`.
+
+When a call is blocked — either by the capability check or the allowlist — Sentinel returns a fake `EventEmitter` object that mimics a real `http.ClientRequest`:
+
+```js
+function _sentinelFakeEmitter(err) {
+    var fake = new EventEmitter();
+    fake.destroyed = true;
+    fake.writable  = false;
+    fake.write     = function () { return false; };
+    fake.end       = function () { return this; };
+    // … etc …
+    setImmediate(function () {
+        if (fake.listenerCount("error") > 0) { fake.emit("error", err); }
+    });
+    return fake;
+}
+```
+
+This prevents the calling code from crashing when it chains `.on('response', ...)` or `.on('error', ...)` on the return value. The error is delivered asynchronously via the `error` event if a listener is registered, matching the real error-handling contract.
+
+## Service Worker enforcement for browser-side `fetch`
+
+For browser-based editor scripts that use `fetch()`, Sentinel installs a Service Worker that intercepts all fetch calls from the editor origin. The Service Worker enforces the same `network:policy.allowlist` check for `network:fetch` calls made from the editor UI.
+
+Demo 21 (SW Fetch Interception) demonstrates this: a browser-only attack where an editor script attempts to use `fetch()` to exfiltrate data. The Service Worker blocks the call via the network-policy allowlist.
+
+<Info>
+Demo 21 is browser-only and cannot be verified via automated CI. It requires manual verification using the interactive start script.
+</Info>
+
+## `network:socket` has no allowlist
+
+<Warning>
+The URL allowlist applies only to `network:http` and `network:fetch`. A package granted `network:socket` can connect raw TCP/UDP to any host and port with no further restriction. There is no host/port allowlist equivalent for raw sockets.
+</Warning>
+
+Raw socket calls (`net.createConnection()`, `tls.connect()`, `dgram.createSocket()`) go through a separate capability check (`network:socket`) and bypass the HTTP URL allowlist entirely. A package with only `network:http` cannot open raw sockets — but a package with `network:socket` faces no destination restrictions.
+
+See [Known gaps](/security/known-gaps) for a full discussion of this limitation.
+
+## `network:dns` has no allowlist
+
+DNS queries go to the system resolver and cannot be restricted by the HTTP allowlist. A package granted `network:dns` can query any domain. DNS is a known data-exfiltration channel — subdomains can encode data to an attacker-controlled nameserver.
+
+There is currently no domain allowlist mechanism for DNS. See [Known gaps](/security/known-gaps).

@@ -1,0 +1,124 @@
+---
+title: "NRG Sentinel"
+description: "Runtime security layer for Node-RED — detects and blocks common attack vectors without modifying the Node-RED core."
+---
+
+<img
+  src="https://gist.githubusercontent.com/AllanOricil/244c22dad889ed47ef6530e5bb605536/raw/b0b02ada070c2bc2d4970cf186866917a3af143b/nrg-sentinel-icon.svg"
+  alt="NRG Sentinel"
+  style={{ width: "120px", margin: "0 auto 2rem", display: "block" }}
+/>
+
+NRG Sentinel is a zero-dependency security layer that runs inside the same Node.js process as Node-RED. It detects and blocks over 34 known attack vectors at runtime — including monkey patching, credential theft, prototype pollution, wire manipulation, and network exfiltration — without touching the Node-RED core.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Sentinel running in your Node-RED instance in under 5 minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Local install, Docker, or npm — choose your deployment path
+  </Card>
+  <Card title="Capability Reference" icon="shield-check" href="/capabilities/overview">
+    Every capability string, what it gates, and how to grant it
+  </Card>
+  <Card title="Defense Architecture" icon="lock" href="/concepts/defense-architecture">
+    How the five-layer defense model works under the hood
+  </Card>
+</CardGroup>
+
+## Why NRG Sentinel?
+
+Node-RED is a powerful flow-based programming tool, but its plugin system gives third-party packages unrestricted access to the runtime. A single malicious or compromised package can:
+
+- Read or overwrite credentials and settings
+- Rewire flows to exfiltrate data
+- Spawn OS processes or open raw network sockets
+- Replace built-in node types with malicious implementations
+- Tamper with the flow files on disk
+
+NRG Sentinel closes these attack surfaces using a layered capability model — every privileged operation is gated and logged, and packages must be explicitly granted the capabilities they need.
+
+## What Sentinel blocks
+
+| # | Attack | What it does |
+|---|--------|-------------|
+| 01 | Monkey Patching | Overwrites Node-RED core functions at runtime |
+| 02 | Hook Injection | Registers malicious `onSend`/`onReceive` hooks |
+| 03 | Credential Theft | Reads decrypted credentials from live node instances |
+| 04 | Wire Manipulation | Rewires flow connections to exfiltrate data |
+| 05 | Direct Receive Injection | Bypasses auth chain via `node.receive()` |
+| 06 | Express Middleware | Installs rogue HTTP middleware on the admin API |
+| 07 | EventEmitter Hijack | Intercepts internal Node-RED events |
+| 09 | Prototype Pollution | Pollutes `Object.prototype` to affect all objects |
+| 20 | Child Process Exec | Spawns shell commands from a message handler |
+| 22 | FS Read | Reads `settings.js` to extract the credential secret |
+| 23 | Process Env Exfiltration | Harvests injected secrets and API keys |
+| 25 | VM Sandbox Escape | Runs code outside Sentinel's `Module._load` hooks |
+| 27 | Network Socket Exfiltration | Creates a raw TCP socket to bypass the HTTP allowlist |
+
+[See all 34 demos →](/security/attack-scenarios)
+
+## Defense layers
+
+```
+Layer 0 — Prototype hardening     Object.preventExtensions on all built-in prototypes
+Layer 1 — Module interception     Module._load hook wraps fs, http, child_process, vm, worker_threads
+Layer 2 — Node isolation          ES6 Proxy on every getNode() return value
+Layer 3 — Surface hardening       Guarded Express routing, process.env Proxy, router-stack Proxy
+Layer 4 — Network policy          Outbound HTTP/HTTPS/socket allowlist
+```
+
+All built-in methods used by guard logic are pinned before any `require()` runs, so a package that overwrites `String.prototype.includes` cannot blind the stack-frame checks.
+
+## How capability grants work
+
+By default Sentinel blocks every privileged operation for every third-party package. Grants live in `settings.js`:
+
+```js settings.js
+module.exports = {
+    sentinel: {
+        allow: {
+            // Every node package needs registry:register to call RED.nodes.registerType()
+            "my-custom-node": ["registry:register"],
+
+            // Grant additional capabilities as needed
+            "node-red-contrib-influxdb": ["registry:register", "node:credentials:read"],
+            "node-red-contrib-exec":     ["registry:register", "process:exec"],
+            "node-red-contrib-file-in":  ["registry:register", "fs:read"],
+        },
+    },
+};
+```
+
+<Info>
+Node-RED's own built-in nodes (`inject`, `debug`, `function`, etc.) live outside the userDir and are never gated by Sentinel. You only need to add grants for **third-party packages** installed into your userDir.
+</Info>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Zero dependencies" icon="box">
+    No npm dependencies. Everything runs from a single preload file injected before Node-RED starts.
+  </Card>
+  <Card title="Offline license verification" icon="wifi-slash">
+    Ed25519 signature verification — no phone-home, no internet required. Works in air-gapped environments.
+  </Card>
+  <Card title="Safe deployment review" icon="eye">
+    Visual flow diff UI intercepts deployments and queues them for operator review before they go live.
+  </Card>
+  <Card title="Threat log" icon="list-check">
+    Every blocked operation is logged with the full call stack so you can diagnose and tune grants.
+  </Card>
+  <Card title="Sidebar panel" icon="sidebar">
+    Node-RED editor panel for managing grants and viewing blocked threats — no terminal needed.
+  </Card>
+  <Card title="Docker hardened image" icon="docker">
+    Pre-built image with read-only filesystem layout, non-root user, and absolute entrypoint.
+  </Card>
+</CardGroup>
+
+## 14-day free trial
+
+No license key required to evaluate Sentinel. All features are fully available during the 14-day trial. After the trial expires, Sentinel continues blocking threats — only certain management features require a license.
+
+[Learn about licensing →](/licensing/overview)

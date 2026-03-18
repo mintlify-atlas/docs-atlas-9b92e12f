@@ -1,0 +1,111 @@
+---
+title: "vm:*, threads:*, and comms:* capabilities"
+description: "Capabilities for VM contexts, worker threads, and the comms channel"
+---
+
+These three capability groups cover the most dangerous privilege escalations available to a Node.js package: escaping Sentinel's `Module._load` hook coverage entirely, and injecting content into the editor UI.
+
+## vm:execute
+
+`vm:*` gates `require('vm')` usage. The `vm` module runs arbitrary JavaScript in a separate V8 context that is **outside the reach of `Module._load` hooks** — any `require()` calls made inside a `vm` script bypass Sentinel's interception entirely.
+
+| Capability | What it gates |
+|---|---|
+| `vm:execute` | `vm.runInNewContext()`, `vm.runInThisContext()`, `vm.runInContext()`, `vm.Script`, `vm.compileFunction()` |
+
+The entire `require('vm')` call is blocked at the module level if the caller lacks this capability. This is not a method-level block — the module never loads.
+
+<Warning>
+Even with `vm:execute` granted, code run inside a `vm` context escapes all `Module._load` protections. Sentinel cannot see what that code does — it can `require()` any module, make any network call, or access the file system without any hook firing. Grant `vm:execute` only in fully audited, controlled circumstances.
+</Warning>
+
+### Blocked operation warning
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED require('vm') — my-node lacks vm:execute
+```
+
+This is a throw, not a warning — the operation is rejected immediately.
+
+### settings.js example
+
+```js
+// Node-RED log when blocked (throws, does not just warn):
+// [@allanoricil/nrg-sentinel] BLOCKED require('vm') — my-node lacks vm:execute
+
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "vm:execute"],
+        },
+    },
+};
+```
+
+---
+
+## threads:spawn
+
+`threads:*` gates `require('worker_threads')` usage. Worker threads run in a separate V8 isolate on a separate OS thread. The main thread's `Module._load` hook does **not** cover code running inside a worker — each worker has its own module loader.
+
+| Capability | What it gates |
+|---|---|
+| `threads:spawn` | `new Worker(...)` — spawn a worker thread |
+
+The entire `require('worker_threads')` call is blocked at the module level if the caller lacks this capability.
+
+<Warning>
+A worker thread spawned by a malicious package can `require()` any module, make any network call, and access the file system without any Sentinel hook firing. Grant `threads:spawn` only in fully audited, controlled circumstances.
+</Warning>
+
+### Blocked operation warning
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED require('worker_threads') — my-node lacks threads:spawn
+```
+
+This is a throw, not a warning — the operation is rejected immediately.
+
+### settings.js example
+
+```js
+// Node-RED log when blocked (throws, does not just warn):
+// [@allanoricil/nrg-sentinel] BLOCKED require('worker_threads') — my-node lacks threads:spawn
+
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "threads:spawn"],
+        },
+    },
+};
+```
+
+---
+
+## comms:publish
+
+`comms:*` gates access to `RED.comms` — the channel that pushes real-time updates from the server to the browser editor, including debug messages, node status badges, and notifications.
+
+| Capability | What it gates |
+|---|---|
+| `comms:publish` | `RED.comms.publish(topic, data)` — push a message to all connected editor clients |
+
+### The social engineering vector
+
+<Warning>
+Without this gate, a malicious node can push fake notifications or fabricated status updates to the operator's browser — a social engineering vector inside the editor UI. For example, a package could emit a fake "deploy successful" notification while silently failing, or push a status badge to another node to mislead the operator about the runtime state.
+</Warning>
+
+### settings.js example
+
+```js
+// settings.js — a plugin that legitimately publishes to the editor
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-dashboard": ["registry:register", "comms:publish"],
+        },
+    },
+};
+```

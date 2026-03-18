@@ -1,0 +1,133 @@
+---
+title: "Network policy"
+description: "How to restrict which URLs a package can reach with the network allowlist"
+---
+
+Sentinel applies a two-level check for outbound network access: a capability gate that controls whether a package may make network calls at all, and a URL allowlist that controls which destinations are reachable.
+
+## The two-level check
+
+1. **Capability gate** — does the package hold `network:http` (or `network:fetch`)? If not, the call is blocked immediately.
+2. **URL allowlist** — if `sentinel.networkPolicy.allowlist` is configured, is the destination URL in the list? If not, the call is blocked.
+
+Both checks must pass for an HTTP or fetch call to succeed.
+
+## `network:http` — outbound HTTP/HTTPS
+
+Triggered when a node calls `http.request()`, `https.request()`, `http.get()`. Gates outbound calls through the `http`/`https` built-in modules.
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED http.request() — my-node lacks network:http
+
+sentinel: {
+    allow: {
+        "my-node": ["registry:register", "network:http"],
+    },
+}
+```
+
+## URL allowlist
+
+`sentinel.networkPolicy.allowlist` controls which URLs are reachable for `network:http` and `network:fetch`. It does not apply to `network:socket` or `network:dns`.
+
+```js
+sentinel: {
+    allow: {
+        "my-node": ["registry:register", "network:http"],
+    },
+    networkPolicy: {
+        allowlist: [
+            "https://api.example.com/",
+            "https://metrics.internal/",
+        ],
+    },
+}
+```
+
+If no allowlist is configured, a package with `network:http` can reach any HTTP/HTTPS destination.
+
+## `network:socket` — raw TCP/UDP sockets
+
+Triggered by `net.createConnection()`, `tls.connect()`, `dgram.createSocket()`. These bypass the HTTP URL allowlist entirely — a package with only `network:http` cannot open raw sockets.
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED net.createConnection() — my-node lacks network:socket
+
+sentinel: {
+    allow: {
+        "my-node": ["registry:register", "network:socket"],
+    },
+}
+```
+
+<Warning>
+  `network:socket` has no allowlist equivalent. The allowlist only applies to HTTP/fetch. A package granted `network:socket` can connect raw TCP/UDP to any host and port with no further restriction. A host/port allowlist for sockets is not yet designed.
+</Warning>
+
+## `network:dns` — DNS lookups
+
+Triggered by `require('dns').lookup()`, `resolve()`, and all other dns methods, including `dns/promises` variants. DNS is a known data-exfiltration channel: subdomains can encode data to an attacker-controlled nameserver (DNS tunneling).
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED dns.lookup() — my-node lacks network:dns
+
+sentinel: {
+    allow: {
+        "my-node": ["registry:register", "network:dns"],
+    },
+}
+```
+
+<Warning>
+  `network:dns` has no allowlist equivalent. DNS queries go to the system resolver and cannot be restricted by the HTTP allowlist. A domain allowlist for DNS would require a separate mechanism.
+</Warning>
+
+## `network:fetch` — browser-side fetch
+
+Gates `globalThis.fetch()` calls. In the browser context, this is enforced by the Service Worker that Sentinel registers in the editor. The same URL allowlist configured in `sentinel.networkPolicy.allowlist` applies.
+
+```js
+// Blocked log:
+// NRG Sentinel: network:fetch not granted — my-node
+
+sentinel: {
+    allow: {
+        "my-node": ["registry:register", "network:fetch"],
+    },
+}
+```
+
+## `network:listen` — inbound connections
+
+Gates `http.createServer()`, `https.createServer()`, `net.createServer()`. Opening a listening port on the host is a backdoor vector — a malicious package could open an unauthenticated port that bypasses all Node-RED auth.
+
+```js
+sentinel: {
+    allow: {
+        "my-node": ["registry:register", "network:listen"],
+    },
+}
+```
+
+## Complete settings.js example
+
+```js
+// settings.js
+module.exports = {
+    sentinel: {
+        allow: {
+            // Only permitted to reach the listed URLs.
+            "node-red-contrib-http-request": ["registry:register", "network:http"],
+        },
+        networkPolicy: {
+            allowlist: [
+                "https://api.example.com/",
+                "https://metrics.internal/",
+            ],
+        },
+    },
+};
+```

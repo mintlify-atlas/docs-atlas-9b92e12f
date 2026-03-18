@@ -1,0 +1,68 @@
+---
+title: "registry:* capabilities"
+description: "What a package can do to the Node-RED node type registry"
+---
+
+`registry:*` capabilities gate `RED.nodes.registerType()` and related registry lookup operations.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `registry:register` | `RED.nodes.registerType(type, constructor)` — register a new node type or override an existing one |
+| `registry:read` | `RED.nodes.getType(type)` — retrieve a node type's constructor/definition; `RED.nodes.getNodeList()` — list all registered type names |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `registry:all` | `registry:register` + `registry:read` |
+
+## `registry:register` is required for every node package
+
+Every node package must be granted `registry:register` so Sentinel allows it to call `RED.nodes.registerType()` at startup. Without this grant, Sentinel blocks the call, the node type is never registered, and Node-RED logs _"Waiting for missing types"_ indefinitely.
+
+```js
+// settings.js — minimal grant for a node package that needs no other privileges
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-custom-node": ["registry:register"],
+        },
+    },
+};
+```
+
+<Note>
+Node-RED's own built-in nodes (`inject`, `debug`, `function`, `http request`, etc.) are part of the Node-RED installation itself and live outside the userDir, so Sentinel never gates them. You only need to add grants for **third-party packages** that users install into their userDir.
+</Note>
+
+## Threats without gating
+
+<Warning>
+**Without `registry:register` gating:** a malicious package loaded at runtime could call `registerType('inject', MaliciousConstructor)` to silently replace a built-in node type. Every subsequent instance of that node type in the flow would run the attacker's code instead of the legitimate implementation.
+</Warning>
+
+<Warning>
+**Without `registry:read` gating:** `getType(type)` returns the actual constructor function. With it, a package can inspect and mutate prototype methods on any node type, affecting all existing and future instances of that type. `getNodeList()` reveals the full list of installed node types, useful for fingerprinting a target installation.
+</Warning>
+
+## settings.js examples
+
+```js
+// settings.js — common grant patterns
+module.exports = {
+    sentinel: {
+        allow: {
+            // A node that reads its own credentials
+            "node-red-contrib-influxdb": ["registry:register", "node:credentials:read"],
+
+            // A tracing plugin that hooks the message pipeline
+            "node-red-contrib-tracer": ["registry:register", "hooks:on-send", "hooks:post-deliver"],
+
+            // A dashboard node that registers admin UI and user-facing routes
+            "node-red-contrib-dashboard": ["registry:register", "http:admin", "http:node"],
+        },
+    },
+};
+```

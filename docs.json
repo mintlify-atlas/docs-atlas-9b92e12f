@@ -1,122 +1,113 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "NRG Sentinel",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#C0392B",
+    "light": "#E74C3C",
+    "dark": "#7B241C"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/AllanOricil/nrg-sentinel-public"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/AllanOricil/nrg-sentinel-public"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/defense-architecture",
+              "concepts/capability-system",
+              "concepts/grants-and-permissions"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Capability Reference",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "capabilities/overview",
+              "capabilities/node",
+              "capabilities/flows",
+              "capabilities/network",
+              "capabilities/filesystem",
+              "capabilities/process",
+              "capabilities/hooks",
+              "capabilities/http",
+              "capabilities/events",
+              "capabilities/registry",
+              "capabilities/settings",
+              "capabilities/storage",
+              "capabilities/vm-threads-comms"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Deployment",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "deployment/local",
+              "deployment/docker",
+              "deployment/settings-reference"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/granting-capabilities",
+              "guides/credential-access-patterns",
+              "guides/network-policy",
+              "guides/scoped-packages",
+              "guides/service-nodes"
+            ]
+          },
+          {
+            "group": "Licensing",
+            "pages": [
+              "licensing/overview",
+              "licensing/trial",
+              "licensing/configuration"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Security Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Defense Techniques",
             "pages": [
-              "api-reference/introduction"
+              "security/overview",
+              "security/prototype-hardening",
+              "security/module-interception",
+              "security/node-isolation",
+              "security/surface-hardening",
+              "security/network-policy"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Attack Scenarios",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "security/attack-scenarios",
+              "security/known-gaps"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

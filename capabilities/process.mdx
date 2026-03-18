@@ -1,0 +1,76 @@
+---
+title: "process:* capabilities"
+description: "What OS-level operations a package can perform"
+---
+
+`process:*` capabilities gate OS-level operations: spawning child processes, reading and writing environment variables, and terminating the Node.js process.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `process:exec` | `child_process.exec()`, `execSync()`, `spawn()`, `spawnSync()`, `execFile()`, `execFileSync()`, `fork()` |
+| `process:env:read` | Read from `process.env` |
+| `process:env:write` | Write to / mutate `process.env` |
+| `process:exit` | `process.exit()`, `process.abort()` — terminate the Node-RED process entirely |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `process:env` | `process:env:read` + `process:env:write` |
+| `process:env:write` | `process:env:write` + `process:env:read` (write implies read) |
+| `process:all` | `process:exec` + `process:env:read` + `process:env:write` + `process:exit` |
+
+## Implementation note
+
+<Info>
+`process` is a global object, not a module — there is no `require('process')` call to intercept via `Module._load`. Gating `process:env:*` requires wrapping `process.env` in a `Proxy` (or using `Object.defineProperty`) at preload time. Gating `process:exit` requires replacing `process.exit` and `process.abort` with guarded wrappers at preload time. Both must happen before any node package loads.
+</Info>
+
+## Blocked operation warning format
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED child_process.execSync() — process:exec not granted for my-node
+```
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED process.env.DATABASE_URL — my-node lacks process:env:read
+```
+
+## settings.js examples
+
+### Child process execution
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED child_process.execSync() — process:exec not granted for my-node
+
+module.exports = {
+    sentinel: {
+        allow: {
+            // A node that genuinely needs to run OS commands
+            "node-red-contrib-exec": ["registry:register", "process:exec"],
+        },
+    },
+};
+```
+
+### Environment variable read
+
+```js
+// Node-RED log when blocked:
+// [@allanoricil/nrg-sentinel] BLOCKED process.env.DATABASE_URL — my-node lacks process:env:read
+
+module.exports = {
+    sentinel: {
+        allow: {
+            "my-node": ["registry:register", "process:env:read"],
+        },
+    },
+};
+```
+
+<Warning>
+`process:exit` is a denial-of-service vector — a package with this capability can terminate the entire Node-RED process. Grant it only in fully audited circumstances.
+</Warning>

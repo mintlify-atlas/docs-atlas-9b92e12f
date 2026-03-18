@@ -1,0 +1,213 @@
+---
+title: "Settings reference"
+description: "Complete reference for all NRG Sentinel configuration options in settings.js"
+---
+
+All Sentinel configuration lives under the `sentinel` key in `settings.js`. Some options can also be set via environment variables, which is useful when `settings.js` is mounted read-only (as in Docker deployments).
+
+## `sentinel.allow`
+
+<ParamField path="sentinel.allow" type="object" required>
+  Maps npm package names to arrays of capability strings. Each key is a package name exactly as it appears in `node_modules/`. The value is the list of capabilities that package is permitted to use.
+
+  Every third-party node package needs at least `registry:register` to call `RED.nodes.registerType()` at startup. Without it, Sentinel blocks the call and Node-RED logs _"Waiting for missing types"_ indefinitely.
+
+  ```js settings.js
+  module.exports = {
+      sentinel: {
+          allow: {
+              // Minimal grant — node registers its type, needs no other privileges
+              "my-custom-node": ["registry:register"],
+
+              // Node that reads its own credentials
+              "node-red-contrib-influxdb": ["registry:register", "node:credentials:read"],
+
+              // Flow-auditing plugin that inspects runtime topology
+              "node-red-contrib-flow-auditor": [
+                  "registry:register",
+                  "node:list",
+                  "node:wires:read",
+                  "flows:read",
+              ],
+
+              // Node that registers admin UI routes
+              "node-red-contrib-dashboard": ["registry:register", "http:admin", "http:node"],
+
+              // Node that makes outbound HTTP calls
+              "node-red-contrib-http-request": ["registry:register", "network:http"],
+
+              // Plugin (no node types) that listens to runtime events
+              // Plugins do not call registerType — no registry:register needed
+              "node-red-contrib-audit-logger": ["events:listen"],
+          },
+      },
+  };
+  ```
+
+  Sentinel identifies the calling package at runtime by walking the call stack and extracting the `node_modules/<package>` segment from the nearest frame that does not belong to Node-RED or Sentinel itself.
+
+  <Note>
+  Node-RED's own built-in nodes (`inject`, `debug`, `function`, `http request`, etc.) live outside the userDir and are never gated by Sentinel. You only need grants for third-party packages installed into the userDir.
+  </Note>
+</ParamField>
+
+## `sentinel.networkPolicy`
+
+<ParamField path="sentinel.networkPolicy" type="object">
+  Configures outbound network restrictions applied on top of capability grants.
+
+  <ParamField path="sentinel.networkPolicy.allowlist" type="string[]">
+    An array of URL strings. When set, packages that hold the `network:http` or `network:fetch` capability are further restricted to only reach URLs that start with one of the entries in this list. Requests to any other URL are blocked.
+
+    ```js settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                "node-red-contrib-http-request": ["registry:register", "network:http"],
+            },
+            networkPolicy: {
+                allowlist: [
+                    "https://api.example.com/",
+                    "https://metrics.internal/",
+                ],
+            },
+        },
+    };
+    ```
+
+    <Note>
+    The `network:socket` capability (raw TCP/UDP via `net`, `tls`, `dgram`) is not restricted by this allowlist. A package that only holds `network:http` cannot open raw sockets regardless of the allowlist.
+    </Note>
+  </ParamField>
+</ParamField>
+
+## `sentinel.license`
+
+<ParamField path="sentinel.license" type="string">
+  A license key issued by NRG. Providing a key activates the tier associated with it and records the customer identifier in the Sentinel startup log.
+
+  ```js settings.js
+  module.exports = {
+      sentinel: {
+          license: "eyJ...", // license key issued by NRG
+      },
+  };
+  ```
+
+  License keys are verified entirely on the local machine. No data is sent to any server during verification and no internet connection is required.
+
+  If `settings.js` is mounted read-only (as in Docker deployments), use the `NRG_SENTINEL_LICENSE` environment variable instead.
+</ParamField>
+
+## Environment variables
+
+### `NRG_SENTINEL_PUBLIC_KEY`
+
+<ParamField path="NRG_SENTINEL_PUBLIC_KEY" type="string">
+  Absolute path to an Ed25519 public key file on disk. When set, the Sentinel bin wrapper reads this key and verifies the signature file at `<settingsPath>.sig` **before Node-RED starts**. If the signature is absent or invalid, the process exits immediately.
+
+  This variable is consumed by `bin/node-red.js`, not by the preload or plugin. It has no effect if you start Node-RED without the bin wrapper.
+
+  ```bash
+  # Pass the key via a Docker secret
+  docker run \
+    -e NRG_SENTINEL_PUBLIC_KEY=/run/secrets/sentinel.pub \
+    --mount type=secret,id=sentinel_pub,target=/run/secrets/sentinel.pub \
+    allanoricil/nrg-sentinel:latest
+  ```
+</ParamField>
+
+### `NRG_SENTINEL_LICENSE`
+
+<ParamField path="NRG_SENTINEL_LICENSE" type="string">
+  License key string. Equivalent to `sentinel.license` in `settings.js`. Use this environment variable in containerised deployments where `settings.js` is mounted read-only and cannot be edited to add a key.
+
+  ```bash
+  docker run -e NRG_SENTINEL_LICENSE="eyJ..." allanoricil/nrg-sentinel:latest
+  ```
+</ParamField>
+
+### `NRG_SENTINEL_ALLOW_ESM`
+
+<ParamField path="NRG_SENTINEL_ALLOW_ESM" type="string">
+  Escape hatch for ESM (ES module) packages. When set to any non-empty value, Sentinel relaxes the `Module._load` restrictions that would otherwise block ESM imports during loading.
+
+  <Warning>
+  This flag disables a core layer of protection. It is intended for development and testing environments where an ESM-based node package is under active development. Do not set this variable in production.
+  </Warning>
+</ParamField>
+
+### `NODE_OPTIONS`
+
+<ParamField path="NODE_OPTIONS" type="string">
+  Standard Node.js environment variable. Set this to `--require @allanoricil/nrg-sentinel/preload` to activate the module-level interception guard before Node-RED starts.
+
+  Without this flag, only the plugin guard (Node-RED API surface) is active. The preload guard (`require()` interception for `fs`, `child_process`, `vm`, `worker_threads`, etc.) will not run.
+
+  ```bash
+  NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload" node-red
+  ```
+
+  In the Docker image this is set automatically by the bin wrapper entrypoint. For local installs, add the export to your shell profile or systemd unit.
+</ParamField>
+
+## Complete annotated example
+
+This `settings.js` combines every Sentinel option:
+
+```js settings.js
+module.exports = {
+    // ── NRG Sentinel ─────────────────────────────────────────────────────────
+    sentinel: {
+        // License key (alternatively, set NRG_SENTINEL_LICENSE env var)
+        license: "eyJ...",
+
+        // Capability grants — one entry per third-party package
+        allow: {
+            // Minimal grant: node registers its type, needs nothing else
+            "my-custom-node": ["registry:register"],
+
+            // Node that reads its own credentials from this.credentials
+            "node-red-contrib-influxdb": ["registry:register", "node:credentials:read"],
+
+            // Flow-auditing plugin that inspects topology
+            "node-red-contrib-flow-auditor": [
+                "registry:register",
+                "node:list",         // RED.nodes.eachNode()
+                "node:wires:read",   // read node.wires (output topology)
+                "flows:read",        // RED.runtime.flows.getFlows()
+            ],
+
+            // APM plugin that hooks the message pipeline
+            "node-red-contrib-tracer": ["registry:register", "hooks:on-send", "hooks:post-deliver"],
+
+            // Node that registers admin UI routes
+            "node-red-contrib-dashboard": ["registry:register", "http:admin", "http:node"],
+
+            // Node that runs OS commands
+            "node-red-contrib-exec": ["registry:register", "process:exec"],
+
+            // Node that reads files from disk
+            "node-red-contrib-file-in": ["registry:register", "fs:read"],
+
+            // Node that makes outbound HTTP calls (URL-restricted by networkPolicy below)
+            "node-red-contrib-http-request": ["registry:register", "network:http"],
+
+            // Plugin that listens to runtime events (no registerType, so no registry:register)
+            "node-red-contrib-audit-logger": ["events:listen"],
+        },
+
+        // Restrict outbound HTTP to specific origins
+        networkPolicy: {
+            allowlist: [
+                "https://api.example.com/",
+                "https://metrics.internal/",
+            ],
+        },
+    },
+
+    // ── Standard Node-RED settings follow ────────────────────────────────────
+    uiPort: process.env.PORT || 1880,
+    // ...
+};
+```

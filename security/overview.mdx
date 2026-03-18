@@ -1,0 +1,75 @@
+---
+title: "Defense overview"
+description: "How Sentinel's five-layer defense model protects Node-RED from within the same process"
+---
+
+## The core constraint
+
+Sentinel runs inside the same Node.js process as every third-party node package it protects against. There is no sandbox boundary, no separate process, and no OS-level isolation — everything happens in one heap. Meaningful enforcement in that environment requires layered hardening techniques, each closing a bypass that would exist if only the others were active.
+
+## The five layers
+
+| Layer | Technique | What it closes |
+|---|---|---|
+| 0 — Prototype hardening | `Object.preventExtensions` on all built-in prototypes | Prototype pollution before any third-party code runs |
+| 1 — Module interception | `Module._load` hook + non-configurable lock | `require()` of `fs`, `http`, `child_process`, `vm`, `worker_threads` |
+| 2 — Node isolation | ES6 `Proxy` on every `getNode()` return value | Property reads, writes, and `defineProperty` on live node instances |
+| 3 — Surface hardening | Guarded Express routing, `process.env` Proxy, router-stack Proxy | Post-init manipulation of the HTTP server and environment |
+| 4 — Network policy | Outbound HTTP/HTTPS/socket allowlist | Exfiltration paths not covered by the module gate |
+| Cross-cutting | Intrinsic capture, call-stack introspection, file integrity watchdog | Prototype mutation of guard helpers, call-identity forgery, on-disk tampering |
+
+## Intrinsic capture — a prerequisite for every other layer
+
+Before Layer 0 runs, every built-in prototype method that guard logic depends on is pinned as a standalone bound function:
+
+```js
+var $strIncludes = Function.prototype.call.bind(String.prototype.includes);
+var $arrSlice    = Function.prototype.call.bind(Array.prototype.slice);
+// … and so on for every method the guards use …
+```
+
+This is not a numbered layer — it is a prerequisite. A malicious package that runs later and overwrites `String.prototype.includes` cannot blind the stack-frame checks, because the guard logic uses the captured alias, not the live prototype property.
+
+<Warning>
+If intrinsic capture were skipped, a package loaded after the preload could overwrite any prototype method that Sentinel's guards call, silently disabling all downstream protection.
+</Warning>
+
+## How the layers compose
+
+Each layer closes a bypass that would exist without it:
+
+| Attacker action | Blocked by |
+|---|---|
+| Overwrite `String.prototype.includes` to blind stack checks | Intrinsic capture |
+| Inject `Object.prototype.admin = true` to forge capability grants | Prototype hardening |
+| Call `require('fs')` directly | Module interception |
+| Overwrite `Module._load` to strip the hook | Module._load non-configurable lock |
+| Call `Object.defineProperty(node, 'credentials', getter)` to steal credentials | Node Proxy `defineProperty` trap |
+| Splice a route handler into `app._router.stack` | Router-stack Proxy |
+| Replace `app._router` with an unguarded object | `configurable: false` on `_router` |
+| Edit `preload.js` on disk to remove guards | File integrity watchdog |
+| Read `process.env.NODE_RED_CREDENTIAL_SECRET` | `process.env` Proxy |
+| Call `vm.runInNewContext(malicious_code)` | `require('vm')` blocked at Module._load |
+
+## Technique pages
+
+<CardGroup cols={2}>
+  <Card title="Prototype hardening" href="/security/prototype-hardening">
+    How `Object.preventExtensions` blocks prototype pollution before any third-party code runs.
+  </Card>
+  <Card title="Module interception" href="/security/module-interception">
+    How the `Module._load` hook gates dangerous built-in modules and locks itself against removal.
+  </Card>
+  <Card title="Node isolation" href="/security/node-isolation">
+    How every `getNode()` return value is wrapped in an ES6 Proxy enforcing the dual-axis capability check.
+  </Card>
+  <Card title="Surface hardening" href="/security/surface-hardening">
+    How Sentinel guards the Express server, `process.env`, and the router stack after Node-RED initialises.
+  </Card>
+  <Card title="Network policy" href="/security/network-policy">
+    How Sentinel enforces the URL allowlist for outbound HTTP/HTTPS calls.
+  </Card>
+  <Card title="Attack scenarios" href="/security/attack-scenarios">
+    The 34 attack scenarios that Sentinel detects and blocks in E2E testing.
+  </Card>
+</CardGroup>

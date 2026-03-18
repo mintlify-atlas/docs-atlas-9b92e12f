@@ -1,0 +1,125 @@
+---
+title: "Module interception"
+description: "How Sentinel intercepts require() to gate dangerous built-in modules"
+---
+
+## How `Module._load` works
+
+Node.js routes every `require()` call through `Module._load`. Sentinel replaces this function with its own wrapper before any node package loads:
+
+```js
+const origLoad = Module._load;          // captured before replacement
+Module._load = function sentinelLoad(request, parent, isMain) {
+    // 1. Block dangerous built-ins before origLoad runs
+    // 2. Call origLoad to get the real module
+    // 3. Wrap dangerous methods on the returned module object
+    return result;
+};
+```
+
+The hook fires for every `require()` anywhere in the process — user packages, transitive dependencies, and Node-RED's own internals. Wrapping happens at the point the module reference is first handed to the caller:
+
+- The wrapped version is what the caller stores in its local `const fs = require('fs')`.
+- The original is kept in a closure inside Sentinel; no third-party code can reach it.
+- Lazily required modules are still covered because wrapping happens at load time, not at startup.
+
+## Locking the hook
+
+Immediately after installing the wrapper, Sentinel makes the `Module._load` property non-writable and non-configurable:
+
+```js
+Object.defineProperty(Module, "_load", {
+    value:        Module._load,   // the Sentinel wrapper
+    writable:     false,
+    configurable: false,
+});
+```
+
+Without this lock, a malicious package loaded early could overwrite `Module._load` with the original, stripping all subsequent guards. The `configurable: false` descriptor makes even `Object.defineProperty` re-attempts throw a `TypeError`.
+
+## Which modules are gated
+
+| Module | What is gated |
+|---|---|
+| `fs`, `fs/promises`, `node:fs`, `node:fs/promises` | Read and write method wrappers (`readFile`, `writeFile`, etc.) |
+| `http`, `https` | `request()`, `get()` — checked against `network:http` and the URL allowlist |
+| `net` | `createConnection()`, `createServer()` — checked against `network:socket` / `network:listen` |
+| `dgram` | `createSocket()` — checked against `network:socket` |
+| `tls` | `connect()`, `createServer()` — checked against `network:socket` / `network:listen` |
+| `dns`, `dns/promises` | All lookup methods — checked against `network:dns` |
+| `child_process` | `exec`, `execSync`, `spawn`, `spawnSync`, `execFile`, `execFileSync`, `fork` — checked against `process:exec` |
+| `vm` | Entire module blocked at `require()` time unless caller holds `vm:execute` |
+| `worker_threads` | Entire module blocked at `require()` time unless caller holds `threads:spawn` |
+
+<Note>
+All four `fs` module variants (`fs`, `fs/promises`, `node:fs`, `node:fs/promises`) must be hooked. Intercepting only `require('fs')` leaves the other three as bypasses.
+</Note>
+
+## Method-level wrapping vs whole-module blocking
+
+For most modules, Sentinel wraps individual methods rather than blocking the entire module:
+
+```js
+var origReadFile = result.readFile;          // original captured in closure
+result.readFile = function guardedReadFile() {
+    var caller = getCallerModule();
+    if (!hasCallerCap(caller, "fs:read")) {
+        warnBlocked("fs.readFile", caller, "fs:read", chain);
+        return;  // or call callback with error
+    }
+    return origReadFile.apply(this, arguments);
+};
+```
+
+This allows the same module to have granular capability control — `fs:read` for read operations and `fs:write` for write operations, independently grantable.
+
+For `vm` and `worker_threads`, the entire `require()` call is blocked because code running inside these contexts escapes `Module._load` hooks entirely. Granting method-level access would be meaningless if the code inside can call any module without restriction.
+
+## ESM `import()` bypass
+
+<Warning>
+ESM dynamic imports — `await import('fs')`, `await import('child_process')` — use the ESM loader, which does **not** call `Module._load`. Every gate described on this page is bypassed unconditionally by a package using `import()` instead of `require()`.
+</Warning>
+
+This affects all gated modules:
+
+| Gate | Bypassed by ESM `import()`? |
+|---|---|
+| `fs:*` | Yes — `await import('fs')` gives unwrapped `fs` |
+| `network:http` | Yes — `await import('http')` gives unwrapped `http` |
+| `process:exec` | Yes — `await import('child_process')` gives unwrapped `child_process` |
+| `network:socket` | Yes |
+| `network:dns` | Yes |
+| `vm:execute` | Yes — `await import('vm')` is not blocked |
+| `threads:spawn` | Yes — `await import('worker_threads')` is not blocked |
+
+**Interim mitigation.** Until ESM loader hooks are implemented, Sentinel detects `"type": "module"` in a package's `package.json` during the `Module._load` hook (when the package's main file is first required) and blocks the entire package:
+
+```js
+if (pkgJson.type === 'module') {
+    throw new Error(
+        'NRG Sentinel: ESM package "' + pkgJson.name + '" blocked — ' +
+        'ESM loader hook not yet active. ' +
+        'Set NRG_SENTINEL_ALLOW_ESM=1 to bypass (unsafe).'
+    );
+}
+```
+
+This is a temporary safety measure. Without the ESM loader hook active, an ESM package is a complete blind spot where every dangerous `import()` goes unchecked. Blocking is safer than silently allowing an unguarded package. Set `NRG_SENTINEL_ALLOW_ESM=1` only if you accept the risk during development.
+
+## Call-stack frame walking
+
+When a guarded method is called, Sentinel must identify which package is the caller. It reads the V8 call stack from `new Error().stack`, parses each frame's file path against the `node_modules/<pkg>` pattern, and returns the first frame that belongs to a user-installed package in the Node-RED `userDir`:
+
+```js
+var frames = $arrSlice($strSplit(new Error().stack, "\n"), 3, 20);
+for (var i = 0; i < frames.length; i++) {
+    if ($strIncludes(frames[i], "@node-red/")) continue;    // trusted NR core
+    if ($strIncludes(frames[i], "/node_modules/express/")) continue;
+    if ($strIncludes(frames[i], "@allanoricil/nrg-sentinel")) continue;
+    var mod = extractModuleFromFrame(frames[i]);
+    if (mod && isFromUserDir(frames[i])) return mod;        // first user frame
+}
+```
+
+Frames from `@node-red/*`, `node-red`, `express`, and Node.js internals are skipped as trusted. Truly anonymous frames from `new Function()` or `eval` — which could be used to push the real attacker frame beyond the inspection window — are treated as external (untrusted).

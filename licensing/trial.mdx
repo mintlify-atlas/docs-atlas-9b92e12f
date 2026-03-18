@@ -1,0 +1,27 @@
+---
+title: "Trial period"
+description: "How the 14-day trial works and what happens when it expires"
+---
+
+NRG Sentinel includes a built-in 14-day trial. No license key is required to start — install the package and all features are immediately available.
+
+## How the trial works
+
+The 14-day period is counted from the first time Sentinel initialises in a given Node-RED instance. The clock starts on first startup and runs regardless of how frequently the instance is used.
+
+During the trial, every feature is fully available with no restrictions.
+
+## After the trial expires
+
+<Note>
+Threat blocking continues after the trial expires. Sentinel does not turn off — it keeps intercepting and blocking attacks as normal. Only certain management features require a license key once the trial period ends.
+</Note>
+
+After expiry:
+
+- Sentinel remains active and continues blocking threats
+- Certain management features — such as the Permissions UI — require a valid license key to use
+
+## Obtaining a license
+
+To continue using management features after the trial, configure a license key in `settings.js` or via the `NRG_SENTINEL_LICENSE` environment variable. See [Configuring a license key](/licensing/configuration) for instructions.

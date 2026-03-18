@@ -1,0 +1,66 @@
+---
+title: "hooks:* capabilities"
+description: "What message pipeline hooks a package can register"
+---
+
+`hooks:*` capabilities gate `RED.hooks.add(hookName, fn)` and `RED.hooks.remove(hookName, fn)` registrations. Each hook has its own capability string so a package can be granted the ability to observe delivered messages without being able to intercept outgoing ones.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `hooks:on-send` | `RED.hooks.add('onSend', fn)` — called when a node calls `send()`, before routing |
+| `hooks:pre-route` | `RED.hooks.add('preRoute', fn)` — before the message is routed to recipient nodes |
+| `hooks:pre-deliver` | `RED.hooks.add('preDeliver', fn)` — before the message is delivered to a node's input handler |
+| `hooks:post-deliver` | `RED.hooks.add('postDeliver', fn)` — after delivery to the input handler |
+| `hooks:on-receive` | `RED.hooks.add('onReceive', fn)` — when a node begins processing a received message |
+| `hooks:post-receive` | `RED.hooks.add('postReceive', fn)` — after the node's input handler completes |
+| `hooks:on-complete` | `RED.hooks.add('onComplete', fn)` — when a node calls `done()` (message acknowledged) |
+| `hooks:remove` | `RED.hooks.remove(hookName, fn)` — deregister a hook handler |
+
+## Shorthand expansions
+
+| Shorthand | Expands to |
+|---|---|
+| `hooks:message` | All 7 message pipeline hooks (excludes `hooks:remove`) — backward-compatible alias |
+| `hooks:all` | All `hooks:*` above including `hooks:remove` |
+
+## The `hooks:remove` threat
+
+<Warning>
+A malicious package that obtains a reference to a hook function — for example via a shared module or by registering its own hook that captures the prior handler in a closure — could call `RED.hooks.remove()` to silently disable it, including Sentinel's own monitoring hooks. Gate `hooks:remove` carefully.
+</Warning>
+
+## settings.js examples
+
+```js
+// settings.js — a tracing / APM plugin that hooks the message pipeline
+module.exports = {
+    sentinel: {
+        allow: {
+            // hooks:on-send fires before routing; hooks:post-deliver fires after delivery
+            "node-red-contrib-tracer": ["registry:register", "hooks:on-send", "hooks:post-deliver"],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a plugin that observes the full message lifecycle
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-audit-logger": [
+                "registry:register",
+                "hooks:on-send",
+                "hooks:pre-route",
+                "hooks:pre-deliver",
+                "hooks:post-deliver",
+                "hooks:on-receive",
+                "hooks:post-receive",
+                "hooks:on-complete",
+            ],
+        },
+    },
+};
+```

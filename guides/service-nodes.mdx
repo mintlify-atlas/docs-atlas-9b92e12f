@@ -1,0 +1,90 @@
+---
+title: "Service nodes as capability brokers"
+description: "How to use a service node pattern to centralize privileged operations and minimize the blast radius of a compromised package"
+---
+
+Sentinel resolves capabilities by looking at the **nearest** user-installed package in the call stack. A "service" package that wraps privileged operations acts as a capability broker: only the service needs the grant, not the packages that call into it.
+
+<Tip>
+  Centralizing privileged operations in a dedicated service package is the recommended pattern when multiple consumer packages need the same privileged operation. Grant only the service the capability, let consumers remain unprivileged, and the service becomes the policy enforcement point — it decides what it exposes, and Sentinel enforces that nothing bypasses it.
+</Tip>
+
+## How call stack resolution works
+
+When package A calls a method in package B, and package B internally makes a privileged call (for example `fs.readFileSync`), the call stack looks like this:
+
+```
+fs.readFileSync          ← built-in (skipped)
+node-red-contrib-file-service/index.js:55   ← nearest userDir frame → checked
+node-red-contrib-my-processor/index.js:12   ← outer frame (not checked for this call)
+```
+
+Sentinel finds `node-red-contrib-file-service` first and checks its grants. `node-red-contrib-my-processor` is not involved in the capability check at all.
+
+## The service node pattern
+
+Publish a service package that wraps privileged operations behind a controlled API, grant it the capabilities it needs, and let consumer packages call it freely.
+
+<Steps>
+  <Step title="Create the service package">
+    The service package holds the privileged capability and exposes a controlled API to consumers. Consumers call the API method; the service makes the underlying privileged call.
+
+    ```js
+    // node-red-contrib-file-service/index.js
+    // This package holds fs:read — consumers don't need it.
+    module.exports = function (RED) {
+        function FileServiceNode(config) {
+            RED.nodes.createNode(this, config);
+            // Exposed API — consumers call node.readConfig(), not fs directly.
+            this.readConfig = function (filePath) {
+                return require("fs").readFileSync(filePath, "utf8");
+            };
+        }
+        RED.nodes.registerType("file-service", FileServiceNode);
+    };
+    ```
+  </Step>
+
+  <Step title="Create the consumer package">
+    The consumer obtains a reference to the service node via `RED.nodes.getNode()` and calls the service's API. It never calls `fs` directly.
+
+    ```js
+    // node-red-contrib-my-processor/index.js
+    // No fs capability needed — reads files through the service node.
+    module.exports = function (RED) {
+        function ProcessorNode(config) {
+            RED.nodes.createNode(this, config);
+            var service = RED.nodes.getNode(config.serviceId);
+            this.on("input", function (msg) {
+                var data = service.readConfig("/data/config.json"); // service makes the fs call
+                // ... process data
+                this.send(msg);
+            });
+        }
+        RED.nodes.registerType("my-processor", ProcessorNode);
+    };
+    ```
+  </Step>
+
+  <Step title="Grant only the service the privileged capability">
+    Only the service package holds `fs:read`. The consumer package needs no capability beyond registering its node type.
+
+    ```js
+    // settings.js
+    sentinel: {
+        allow: {
+            // Only the service needs fs:read — it owns the privileged boundary.
+            "node-red-contrib-file-service": ["registry:register", "fs:read"],
+            // The consumer needs no capability beyond registering its node type.
+            "node-red-contrib-my-processor": ["registry:register"],
+        },
+    }
+    ```
+  </Step>
+</Steps>
+
+## Security benefit
+
+If a consumer package is compromised, it still cannot perform the privileged operation directly. Any attempt by `node-red-contrib-my-processor` to call `require('fs').readFileSync()` would be blocked — it does not hold `fs:read`. The only path to the privileged operation is through the service's controlled API, which the service author decides to expose.
+
+This limits the blast radius of a compromised consumer: the attacker can invoke whatever the service chooses to expose, but cannot reach the underlying resource directly or perform operations the service API does not offer.

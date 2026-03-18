@@ -1,0 +1,95 @@
+---
+title: "events:* capabilities"
+description: "What a package can listen to or emit on the Node-RED internal event bus"
+---
+
+`events:*` capabilities gate access to `RED.events` — a Node.js `EventEmitter` used as an internal pub/sub bus between Node-RED subsystems. Capabilities are **dynamic**: the event name is part of the capability string.
+
+## Dynamic capability string format
+
+Unlike most capability groups where the strings are fixed, `events:*` capabilities encode the event name directly:
+
+```
+events:listen:<name>
+events:emit:<name>
+events:remove-listeners:<name>
+```
+
+This means you can grant a package access to a specific event without exposing the entire bus.
+
+## Capability table
+
+| Capability | What it gates |
+|---|---|
+| `events:listen:<name>` | `RED.events.on(name, fn)` / `RED.events.once(name, fn)` for a specific event |
+| `events:listen:*` | Listen to any event |
+| `events:emit:<name>` | `RED.events.emit(name, ...)` for a specific event |
+| `events:emit:*` | Emit any event |
+| `events:remove-listeners:<name>` | `RED.events.removeListener(name, fn)` / `RED.events.removeAllListeners(name)` for a specific event |
+| `events:remove-listeners:*` | Remove listeners for any event |
+
+## Concrete examples
+
+```
+events:listen:flows:started
+events:listen:runtime-state
+events:listen:node-status
+events:listen:banana              # custom event emitted by another node
+events:emit:my-plugin:ready
+events:remove-listeners:my-topic  # remove own listeners on cleanup
+```
+
+<Info>
+`events:listen:*`, `events:emit:*`, and `events:remove-listeners:*` are high-privilege shorthands. In practice, packages should declare the specific event names they need rather than using wildcard capabilities.
+</Info>
+
+## The `removeAllListeners` threat
+
+<Warning>
+`RED.events.removeAllListeners(name)` wipes every handler for an event in a single call — including those registered by Sentinel or other security packages for monitoring. A malicious package with `events:remove-listeners:*` could silently blind all observers of a critical event. Grant wildcard remove-listener capabilities only to fully audited packages.
+</Warning>
+
+## settings.js examples
+
+```js
+// settings.js — a plugin (no node types) that listens to runtime events
+// Plugins do not call registerType — no registry:register needed
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-audit-logger": ["events:listen"],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a plugin that listens to specific events
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-flow-monitor": [
+                "registry:register",
+                "events:listen:flows:started",
+                "events:listen:runtime-state",
+                "events:emit:my-plugin:ready",
+            ],
+        },
+    },
+};
+```
+
+```js
+// settings.js — a package that cleans up its own listeners on shutdown
+module.exports = {
+    sentinel: {
+        allow: {
+            "node-red-contrib-my-plugin": [
+                "registry:register",
+                "events:listen:flows:started",
+                "events:remove-listeners:my-topic",
+            ],
+        },
+    },
+};
+```

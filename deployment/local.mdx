@@ -1,0 +1,153 @@
+---
+title: "Local install"
+description: "Install and run NRG Sentinel in your local Node-RED instance"
+---
+
+This page covers everything you need to run Sentinel on a local Node-RED host: installing the package, activating the preload guard, making the configuration permanent, and understanding what the bin wrapper does.
+
+## Installation
+
+<Steps>
+  <Step title="Install Sentinel into your Node-RED user directory">
+    Sentinel must be installed inside your Node-RED user directory (`~/.node-red` by default) so that Node-RED auto-discovers it as a plugin:
+
+    ```bash
+    cd ~/.node-red
+    npm install @allanoricil/nrg-sentinel
+    ```
+
+    Node-RED scans `~/.node-red/node_modules/` for packages that declare a `node-red.plugins` field. Sentinel declares one, so the sidebar panel and plugin features load automatically on the next restart. No extra configuration is needed for that.
+
+    <Info>
+    The Node-RED binary itself stays wherever it was already installed (globally or via a system package). You are only installing Sentinel into the user directory, not Node-RED itself.
+    </Info>
+  </Step>
+
+  <Step title="Activate the preload guard">
+    The plugin alone covers the Node-RED API surface. To also gate `require()` calls for dangerous built-in modules (`fs`, `child_process`, `vm`, `worker_threads`, and so on), the Sentinel preload must run before Node-RED's first `require()`.
+
+    Set `NODE_OPTIONS` before starting Node-RED:
+
+    ```bash
+    NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload" node-red
+    ```
+
+    <Warning>
+    Invoke `node-red` directly — not `./node_modules/.bin/node-red`. The `node-red` package is not installed inside `~/.node-red`; it lives in the global `node_modules`. The Sentinel bin wrapper handles both cases automatically (see [The bin wrapper](#the-bin-wrapper)), but the direct `node-red` command in `PATH` is the simplest approach for local installs.
+    </Warning>
+  </Step>
+
+  <Step title="Make the preload permanent">
+    To avoid setting `NODE_OPTIONS` on every start, add the export to your shell profile or your Node-RED service configuration.
+
+    <Tabs>
+      <Tab title="Shell profile">
+        Add to `~/.bashrc`, `~/.zshrc`, or your shell's equivalent:
+
+        ```bash
+        # ~/.bashrc or ~/.zshrc
+        export NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload"
+        ```
+
+        Reload the profile (`source ~/.bashrc`) and then start Node-RED as normal.
+      </Tab>
+      <Tab title="systemd unit">
+        If Node-RED runs as a systemd service, add the environment variable to the unit file:
+
+        ```ini
+        [Service]
+        Environment="NODE_OPTIONS=--require @allanoricil/nrg-sentinel/preload"
+        ExecStart=/usr/bin/node-red
+        ```
+
+        Reload systemd and restart the service:
+
+        ```bash
+        sudo systemctl daemon-reload
+        sudo systemctl restart nodered
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Grant your first capability">
+    By default Sentinel blocks every privileged operation for every third-party package. The minimum grant any node package needs is `registry:register`. Without it, Sentinel blocks the `RED.nodes.registerType()` call and Node-RED logs _"Waiting for missing types"_ indefinitely.
+
+    Add the grant in `~/.node-red/settings.js`:
+
+    ```js settings.js
+    module.exports = {
+        sentinel: {
+            allow: {
+                // Replace with the npm package name exactly as it appears in node_modules/
+                "my-custom-node": ["registry:register"],
+            },
+        },
+    };
+    ```
+
+    <Note>
+    Node-RED's own built-in nodes (`inject`, `debug`, `function`, `http request`, etc.) live outside the userDir and are never gated by Sentinel. You only need grants for third-party packages installed into `~/.node-red/node_modules/`.
+    </Note>
+  </Step>
+
+  <Step title="Verify the install">
+    Start Node-RED with the preload active:
+
+    ```bash
+    NODE_OPTIONS="--require @allanoricil/nrg-sentinel/preload" node-red
+    ```
+
+    Look for this line in the startup log — it confirms the preload guard is running:
+
+    ```
+    [@allanoricil/nrg-sentinel] preload guard active
+    ```
+
+    In the Node-RED editor, open the sidebar. The **Sentinel** panel appears alongside the standard Info and Debug panels. It shows:
+
+    - Active protection status
+    - Any blocked operations, with the full call stack and the grant needed to allow them
+    - Package grant management UI
+  </Step>
+</Steps>
+
+## Blocked operation warnings
+
+When a node package attempts a privileged operation it has not been granted, Sentinel logs a warning to the Node-RED console:
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED fs.readFileSync() — my-custom-node lacks fs:read
+  Call stack:
+    at Object.<anonymous> (/home/user/.node-red/node_modules/my-custom-node/index.js:42:5)
+  To allow, add to settings.js:
+    sentinel: { allow: { "my-custom-node": ["fs:read"] } }
+```
+
+For modules blocked entirely at `require()` time (such as `vm` and `worker_threads`), the call throws immediately rather than printing a warning:
+
+```
+[@allanoricil/nrg-sentinel] BLOCKED require('vm') — my-custom-node lacks vm:execute
+```
+
+Both formats tell you exactly which capability string to add — no guessing required.
+
+## The bin wrapper
+
+`bin/node-red.js` is a thin wrapper binary that Sentinel installs at `node_modules/@allanoricil/nrg-sentinel/bin/node-red.js`. It does two things in order:
+
+1. **Verifies `settings.js` signature** — if the `NRG_SENTINEL_PUBLIC_KEY` environment variable is set to a path, the wrapper reads the corresponding Ed25519 public key and verifies the signature file at `<settingsPath>.sig` before Node-RED starts. If verification fails, the process exits immediately.
+2. **Injects the preload** — it prepends `--require preload.js` to `NODE_OPTIONS`, then spawns the real `node-red` binary. This guarantees the preload is active regardless of how Node-RED was started.
+
+### How the wrapper resolves `node-red`
+
+The wrapper uses two resolution strategies depending on the install layout:
+
+- **Co-installed in the same `node_modules/` tree (Docker)** — when `node-red` is present in the same directory as Sentinel (e.g. `/usr/src/nodered/node_modules/`), the wrapper resolves the `node-red` JS entrypoint via `require.resolve` and runs it with `node` directly. This is how the Docker image works.
+- **Separate install (local/host)** — when `node-red` is not in the same `node_modules/` tree, the wrapper falls back to finding `node-red` via `PATH`.
+
+In both cases the preload injection happens before the real binary is invoked.
+
+<Note>
+For local installs you typically do not call the bin wrapper directly. Setting `NODE_OPTIONS` and invoking `node-red` from `PATH` is simpler and achieves the same result. The wrapper exists primarily to support the Docker entrypoint, where an absolute path is required and the co-install layout is guaranteed.
+</Note>

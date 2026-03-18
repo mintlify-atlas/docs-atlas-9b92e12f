@@ -1,0 +1,93 @@
+---
+title: "Surface hardening"
+description: "How Sentinel hardens the Express server, process.env, and the router stack"
+---
+
+## Why this layer is needed
+
+Module interception (Layer 1) gates `require()` calls for dangerous modules. But several attack surfaces are not modules at all:
+
+- The Express `httpAdmin` and `httpNode` instances are plain objects available as properties of the `RED` API.
+- `process.env` is a global object — there is no `require('process')` call to intercept.
+- The Express router's internal `stack` array is a plain `Array` that can be mutated in-place after route registration guards pass.
+
+Layer 3 installs targeted guards on each of these surfaces.
+
+## Express routing method guards
+
+Sentinel wraps the routing methods (`use`, `get`, `post`, `put`, `delete`, `patch`, `options`, `head`, `all`) on both the `httpAdmin` and `httpNode` Express instances. After Node-RED initialises, any call to these methods from a user package triggers a capability check:
+
+- `http:admin` is required to register routes or middleware on `httpAdmin`.
+- `http:node` is required to register routes or middleware on `httpNode`.
+
+The wrappers are installed using the captured original methods so they cannot be stripped by overwriting the method on the Express instance.
+
+## `process.env` Proxy
+
+After settings are loaded and the `allowMap` is populated, `process.env` is replaced with a `Proxy`:
+
+```js
+process.env = new Proxy(_origEnv, {
+    get: function (target, prop) {
+        if (!isInternalCaller()) {
+            var caller = getCallerModule();
+            if (!hasCallerCap(caller, "process:env:read")) { warnBlocked(...); return undefined; }
+        }
+        return target[prop];
+    },
+    set: function (target, prop, value) {
+        if (!isInternalCaller()) {
+            var caller = getCallerModule();
+            if (!hasCallerCap(caller, "process:env:write")) { warnBlocked(...); return true; }
+        }
+        target[prop] = value;
+        return true;
+    },
+});
+```
+
+`process` is a global object, not a module — there is no `require()` call to intercept. A Proxy on `process.env` is the only way to gate reads and writes at the language level.
+
+<Note>
+The `process.env` Proxy is installed *after* settings load, not at preload startup. Node-RED reads many `process.env` variables during its own boot sequence before any user package runs. Installing the Proxy at preload time would trigger capability checks against an empty `allowMap`, blocking Node-RED's own initialisation.
+</Note>
+
+## Router-stack Proxy
+
+Express stores its middleware chain in `app._router.stack` — a plain array. A malicious package with `http:admin` access could still inject middleware by mutating this array in-place after the route registration guard passes — for example by calling `app._router.stack.splice(0, 0, rogueHandler)` directly.
+
+Sentinel wraps the array in a `Proxy` and intercepts the `_router` property assignment with a `configurable: false` setter:
+
+```js
+new Proxy(routerStackArray, {
+    set: function (target, prop, value) {
+        if (!isInternalCaller()) { warnBlocked(...); return true; }
+        target[prop] = value;
+        return true;
+    },
+    deleteProperty: function (target, prop) {
+        if (!isInternalCaller()) { warnBlocked(...); return true; }
+        delete target[prop];
+        return true;
+    },
+});
+```
+
+The `set` trap intercepts:
+- Direct index writes (`stack[5] = handler`)
+- Length truncation (`stack.length = 0`)
+- Methods that call `[[Set]]` internally: `push`, `splice`, `sort`, `reverse`, `fill`
+
+The `deleteProperty` trap intercepts `delete stack[i]` and remove-only `splice` calls.
+
+In-place mutations are the only route that bypasses the `use()`/`get()`/etc. method wrappers, making this Proxy the necessary last layer for Express security.
+
+## `configurable: false` property locks
+
+After installing a guarded accessor, Sentinel calls `Object.defineProperty` with `configurable: false` to prevent the descriptor from being replaced:
+
+- `Module._load` — prevents stripping the module interception hook.
+- `app._router` on Express instances — prevents an attacker from replacing the guarded router with an unguarded one.
+- `rt.stack` on the router object — prevents the guarded stack accessor from being overridden.
+
+An `Object.defineProperty` call with a new descriptor can silently replace a previously installed getter or setter, undoing a guard. `configurable: false` makes such a call throw a `TypeError`, closing this bypass.

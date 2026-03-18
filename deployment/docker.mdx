@@ -1,0 +1,114 @@
+---
+title: "Docker deployment"
+description: "Run NRG Sentinel in a hardened Docker container"
+---
+
+The NRG Sentinel Docker image is a production-hardened Node-RED container. The security model rests on filesystem ownership, read-only mounts, and a tamper-resistant entrypoint.
+
+## Quick start
+
+Pre-built images are published to Docker Hub on every release:
+
+```bash
+docker pull allanoricil/nrg-sentinel:latest
+# or pin to a specific version
+docker pull allanoricil/nrg-sentinel:1.2.3
+```
+
+<Tabs>
+  <Tab title="Without signature verification">
+    ```bash
+    docker run -p 1880:1880 \
+      -v $(pwd)/settings.js:/etc/nodered/settings.js:ro \
+      -v $(pwd)/data:/data \
+      allanoricil/nrg-sentinel:latest
+    ```
+  </Tab>
+  <Tab title="With signature verification">
+    ```bash
+    docker run -p 1880:1880 \
+      -v $(pwd)/settings.js:/etc/nodered/settings.js:ro \
+      -v $(pwd)/settings.js.sig:/etc/nodered/settings.js.sig:ro \
+      -v $(pwd)/data:/data \
+      -e NRG_SENTINEL_PUBLIC_KEY=/run/secrets/sentinel.pub \
+      --mount type=secret,id=sentinel_pub,target=/run/secrets/sentinel.pub \
+      allanoricil/nrg-sentinel:latest
+    ```
+
+    When `NRG_SENTINEL_PUBLIC_KEY` is set, the bin wrapper reads the Ed25519 public key at that path and verifies `settings.js.sig` before Node-RED starts. If verification fails, the container exits immediately.
+  </Tab>
+</Tabs>
+
+## Build from source
+
+```bash
+docker build -t nrg-sentinel .
+```
+
+The `Dockerfile` accepts build arguments:
+
+```bash
+docker build --build-arg NODERED_VERSION=latest -t nrg-sentinel .
+```
+
+## Volume configuration
+
+Mount a persistent volume at `/data` so flows, credentials, and custom nodes survive container restarts:
+
+```bash
+docker run -p 1880:1880 \
+  -v $(pwd)/settings.js:/etc/nodered/settings.js:ro \
+  -v $(pwd)/data:/data \
+  allanoricil/nrg-sentinel:latest
+```
+
+The `/data` directory is declared as a `VOLUME` in the image. Docker creates an anonymous volume there automatically if you do not supply a bind mount, but using a named volume or bind mount is recommended for production so data is not lost when the container is removed.
+
+## Filesystem security model
+
+The image enforces a strict three-zone ownership model:
+
+| Path | Owner | Permissions | Contents |
+|------|-------|-------------|----------|
+| `/usr/src/nodered` | `root` | `chmod a-w` (read-only for everyone) | Node-RED and Sentinel installation |
+| `/etc/nodered` | `root` | `chmod 555` (read-only for everyone) | `settings.js` (capability grants, config) |
+| `/data` | `nodered` | writable by `nodered` user | flows, credentials, custom nodes |
+
+The Node-RED process runs as the unprivileged `nodered` user. It can read everything it needs and write only to `/data`. It cannot modify the Sentinel or Node-RED installation on disk, even if a malicious custom node executes code inside the process.
+
+<Warning>
+The write bit on `/usr/src/nodered` is stripped for **everyone, including root** (`chmod -R a-w`). Root can restore it with an explicit `chmod`, but any silent in-container modification — for example, a privilege-escalated malicious node attempting to patch `preload.js` or replace the entrypoint — would require that explicit `chmod` first, making the tampering visible in audit logs.
+</Warning>
+
+## Why `settings.js` lives in `/etc/nodered`
+
+`settings.js` controls the capability grants for every node package. Moving it out of `/data` (the writable zone) means a malicious custom node cannot edit the file at runtime to grant itself new permissions.
+
+The file is mounted read-only from the host:
+
+```bash
+-v $(pwd)/settings.js:/etc/nodered/settings.js:ro
+```
+
+If `settings.js` lived in `/data`, any code running inside the Node-RED process could write to it — effectively letting a compromised node promote its own privileges by modifying the file that governs those privileges.
+
+## Why the entrypoint is an absolute path
+
+The `ENTRYPOINT` hardcodes the full filesystem path to the Sentinel bin wrapper:
+
+```
+dumb-init -- node /usr/src/nodered/node_modules/@allanoricil/nrg-sentinel/bin/node-red.js
+```
+
+This bypasses `node_modules/.bin/` entirely. A malicious package that declares `"bin": { "node-red": "..." }` in its `package.json` cannot displace the entrypoint, because the container never resolves it through `PATH` or npm's bin symlink mechanism.
+
+## How dumb-init handles PID 1
+
+`dumb-init` runs as PID 1 in the container and correctly forwards OS signals to the Node-RED process. Without a proper PID 1 handler, `docker stop` sends `SIGTERM` to PID 1 (the shell or `node` process) but that signal may be ignored, causing Docker to wait for the timeout and then send `SIGKILL`. `dumb-init` reaps zombie processes and forwards all signals to the child, ensuring graceful shutdown.
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `NRG_SENTINEL_PUBLIC_KEY` | Path to an Ed25519 public key file. When set, the bin wrapper verifies `settings.js` against `<settingsPath>.sig` before starting Node-RED. |
+| `NRG_SENTINEL_LICENSE` | License key string. Use this instead of `sentinel.license` in `settings.js` when the settings file is mounted read-only. |
