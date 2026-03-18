@@ -1,0 +1,125 @@
+{
+  "projectType": "framework",
+  "projectName": "NRG Sentinel",
+  "projectDescription": "A runtime security layer for Node-RED that detects and blocks common attack vectors using a layered capability-based permission system without modifying the Node-RED core.",
+  "theme": "aspen",
+  "primaryColor": "#C0392B",
+  "lightColor": "#E74C3C",
+  "darkColor": "#7B241C",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/defense-architecture",
+              "concepts/capability-system",
+              "concepts/grants-and-permissions"
+            ]
+          },
+          {
+            "group": "Capability Reference",
+            "pages": [
+              "capabilities/overview",
+              "capabilities/node",
+              "capabilities/flows",
+              "capabilities/network",
+              "capabilities/filesystem",
+              "capabilities/process",
+              "capabilities/hooks",
+              "capabilities/http",
+              "capabilities/events",
+              "capabilities/registry",
+              "capabilities/settings",
+              "capabilities/storage",
+              "capabilities/vm-threads-comms"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/local",
+              "deployment/docker",
+              "deployment/settings-reference"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/granting-capabilities",
+              "guides/credential-access-patterns",
+              "guides/network-policy",
+              "guides/scoped-packages",
+              "guides/service-nodes"
+            ]
+          },
+          {
+            "group": "Licensing",
+            "pages": [
+              "licensing/overview",
+              "licensing/trial",
+              "licensing/configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Security Reference",
+        "groups": [
+          {
+            "group": "Defense Techniques",
+            "pages": [
+              "security/overview",
+              "security/prototype-hardening",
+              "security/module-interception",
+              "security/node-isolation",
+              "security/surface-hardening",
+              "security/network-policy"
+            ]
+          },
+          {
+            "group": "Attack Scenarios",
+            "pages": [
+              "security/attack-scenarios",
+              "security/known-gaps"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Capability-based access control for Node-RED third-party packages",
+    "Runtime module interception via Module._load hooks to gate dangerous built-ins (fs, http, child_process, vm, worker_threads)",
+    "ES6 Proxy-based node isolation for every getNode() return value with dual-axis permission checks",
+    "Prototype hardening via Object.preventExtensions on all built-in prototypes before third-party code runs",
+    "Safe deployment review queue with visual flow diff UI",
+    "Network policy allowlist for restricting outbound HTTP/HTTPS calls by URL",
+    "Service Worker-based fetch interception for browser-side script isolation",
+    "Hardened Docker image with filesystem ownership split and read-only settings mounting",
+    "Offline Ed25519 license verification with no phone-home",
+    "Node-RED sidebar panel for managing grants and viewing threat logs"
+  ],
+  "publicApiSurface": [
+    "sentinel.allow — capability grants map in settings.js",
+    "sentinel.networkPolicy.allowlist — URL allowlist for outbound network calls",
+    "sentinel.license — license key configuration in settings.js",
+    ".sentinel-grants.json — dynamic grants file for UI-managed permissions",
+    "NRG_SENTINEL_LICENSE — environment variable for license key",
+    "NRG_SENTINEL_PUBLIC_KEY — environment variable for settings.js signature verification",
+    "NRG_SENTINEL_ALLOW_ESM — escape hatch for ESM packages during development",
+    "NODE_OPTIONS=--require @allanoricil/nrg-sentinel/preload — preload guard activation",
+    "bin/node-red.js — wrapper binary that injects the preload and optionally verifies settings.js",
+    "plugin.js — Node-RED plugin entry point for sidebar UI and admin API routes"
+  ]
+}
